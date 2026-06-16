@@ -4,6 +4,8 @@ import com.convexa.ai.convexa_ai_backend.dto.AnalyzeResponse;
 import com.convexa.ai.convexa_ai_backend.entity.CallRecord;
 import com.convexa.ai.convexa_ai_backend.repository.UserRepository;
 import com.convexa.ai.convexa_ai_backend.service.CallRecordService;
+import com.convexa.ai.convexa_ai_backend.service.CloudinaryService;
+import com.convexa.ai.convexa_ai_backend.service.CloudinaryService.CloudinaryUploadResult;
 import com.convexa.ai.convexa_ai_backend.dto.QualityScoreResponse;
 import com.convexa.ai.convexa_ai_backend.dto.TranscriptRequest;
 import jakarta.validation.Valid;
@@ -19,10 +21,6 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.servlet.http.HttpServletRequest;
 import com.convexa.ai.convexa_ai_backend.entity.User;
 
-import java.io.File;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.nio.file.Paths;
 import java.util.*;
 
 @RestController
@@ -35,6 +33,13 @@ public class CallRecordController {
 
     @Autowired
     private UserRepository userRepository;
+
+    // ── Cloudinary service — constructor injection per Spring Boot best practice ──
+    private final CloudinaryService cloudinaryService;
+
+    public CallRecordController(CloudinaryService cloudinaryService) {
+        this.cloudinaryService = cloudinaryService;
+    }
 
     private final RestTemplate restTemplate = new RestTemplate();
 
@@ -60,36 +65,26 @@ public class CallRecordController {
                     );
 
             // ===============================
-            // CREATE UPLOADS FOLDER
+            // UPLOAD AUDIO TO CLOUDINARY
             // ===============================
+            //
+            // Replaces the old local "uploads" folder write. The uploads
+            // directory is no longer used anywhere in this controller.
+            //
+            // CloudinaryService.uploadAudio() reads file.getBytes() directly
+            // (no temp file written to local disk) and returns the secure
+            // HTTPS URL + public_id needed for later deletion.
 
-            String uploadDir = "uploads";
+            CloudinaryUploadResult uploadResult =
+                    cloudinaryService.uploadAudio(file);
 
-            File directory = new File(uploadDir);
+            String cloudinaryUrl      = uploadResult.secureUrl();
+            String cloudinaryPublicId = uploadResult.publicId();
 
-            if (!directory.exists()) {
-                directory.mkdirs();
-            }
-
-            // ===============================
-            // SAVE FILE
-            // ===============================
-
-            // ── Issue #1 fix: sanitise filename before storing ──────────────
-            // Raw filenames may contain spaces, '#', '?' and other characters
-            // that are illegal / misinterpreted in URL path segments.
-            // '#' is the worst offender: the browser strips everything from '#'
-            // onward as a fragment BEFORE sending the HTTP request, so the
-            // server never receives the full path and returns 404.
-            String rawName    = file.getOriginalFilename();
-            String fileName   = sanitiseFileName(rawName);
-            // ───────────────────────────────────────────────────────────────
-
-            Path filePath = Paths.get(uploadDir, fileName);
-
-            Files.write(filePath, file.getBytes());
-
-            String audioUrl = "/audio/" + fileName;
+            // fileName is still stored for display purposes (e.g. "Recording 1.mp3")
+            String fileName = file.getOriginalFilename() != null
+                    ? file.getOriginalFilename()
+                    : "recording_" + System.currentTimeMillis() + ".mp3";
 
             // ===============================
             // SEND FILE TO FASTAPI (/transcribe)
@@ -351,7 +346,8 @@ public class CallRecordController {
 
             CallRecord callRecord = CallRecord.builder()
                     .fileName(fileName)
-                    .filePath(audioUrl)
+                    .cloudinaryUrl(cloudinaryUrl)
+                    .cloudinaryPublicId(cloudinaryPublicId)
                     .transcript(transcript)
                     .summary(
                             analyze.getSummary()
@@ -441,8 +437,19 @@ public class CallRecordController {
     }
 
     // DELETE CALL RECORD
+    //
+    // Deletes the Cloudinary asset first, then the database row.
+    // Cloudinary deletion failure is logged (inside CloudinaryService) but
+    // never blocks the database deletion — an orphaned Cloudinary asset is
+    // a much smaller problem than a record the user can't remove from the UI.
     @DeleteMapping("/{id}")
     public String deleteCallRecord(@PathVariable Long id) {
+        CallRecord existing = callRecordService.getCallRecordById(id);
+
+        if (existing != null && existing.getCloudinaryPublicId() != null) {
+            cloudinaryService.deleteAudio(existing.getCloudinaryPublicId());
+        }
+
         callRecordService.deleteCallRecord(id);
         return "Call Record Deleted Successfully";
     }
@@ -475,38 +482,11 @@ public class CallRecordController {
                 );
     }
 
-    // ─────────────────────────────────────────────────────────────────────────
-    //  Issue #1 fix — URL-safe filename sanitiser
-    //
-    //  Replaces every character that is problematic in an HTTP path segment:
-    //    • space → _  (unencoded spaces break URL parsing)
-    //    • #     → _  (browser treats as fragment; NEVER sent to server)
-    //    • ?     → _  (query-string delimiter)
-    //    • and any other non-alphanumeric char except . - _
-    //
-    //  The file extension (last dot segment) is always preserved unchanged.
-    //  Consecutive underscores are collapsed, and leading/trailing ones trimmed.
-    // ─────────────────────────────────────────────────────────────────────────
-    private String sanitiseFileName(String original) {
-        if (original == null || original.isBlank()) {
-            return "recording_" + System.currentTimeMillis() + ".mp3";
-        }
-        int dotIdx  = original.lastIndexOf('.');
-        String stem = dotIdx > 0 ? original.substring(0, dotIdx) : original;
-        String ext  = dotIdx > 0 ? original.substring(dotIdx)    : "";
-
-        // Keep only alphanumeric, dot, hyphen, underscore — replace everything else
-        String safeStem = stem.replaceAll("[^A-Za-z0-9.\\-]", "_");
-
-        // Collapse consecutive underscores and trim edge underscores
-        safeStem = safeStem.replaceAll("_+", "_").replaceAll("^_+|_+$", "");
-
-        if (safeStem.isEmpty()) {
-            safeStem = "recording_" + System.currentTimeMillis();
-        }
-
-        return safeStem + ext;
-    }
+    // NOTE: filename sanitisation is no longer needed here. Cloudinary
+    // generates its own safe public_id (see CloudinaryService.buildPublicId),
+    // and the cloudinaryUrl returned by Cloudinary is already a complete,
+    // correctly-encoded HTTPS URL — no manual encoding is required anywhere
+    // this URL is consumed.
 
 
     @PostMapping("/timeline")

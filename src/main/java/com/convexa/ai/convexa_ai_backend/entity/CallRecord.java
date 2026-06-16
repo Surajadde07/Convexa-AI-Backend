@@ -25,8 +25,22 @@ public class CallRecord {
     @NotBlank(message = "File name is required")
     private String fileName;
 
+    // ── Cloudinary storage fields ─────────────────────────────────────────────
+    // Replaces the old `filePath` column (local disk path).
+    //
+    // cloudinaryUrl      — the HTTPS URL returned by Cloudinary after upload.
+    //                      This is what the frontend <audio src> points to.
+    //                      Example: https://res.cloudinary.com/your-cloud/video/upload/...
+    //
+    // cloudinaryPublicId — the Cloudinary resource identifier.
+    //                      Required to delete the asset via the Cloudinary API.
+    //                      Example: convexa-ai-recordings/my_call_recording
+    // ─────────────────────────────────────────────────────────────────────────
+    @Column(length = 1000)
+    private String cloudinaryUrl;
+
     @Column(length = 500)
-    private String filePath;
+    private String cloudinaryPublicId;
 
     @Column(columnDefinition = "TEXT")
     @NotBlank(message = "Transcript cannot be empty")
@@ -66,7 +80,6 @@ public class CallRecord {
 
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "user_id")
-
     @JsonIgnore
     private User user;
 
