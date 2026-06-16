@@ -28,13 +28,11 @@ public class CallRecord {
     @Column(length = 500)
     private String filePath;
 
-    @Lob
-    @Column(columnDefinition = "LONGTEXT")
+    @Column(columnDefinition = "TEXT")
     @NotBlank(message = "Transcript cannot be empty")
     private String transcript;
 
-    @Lob
-    @Column(columnDefinition = "LONGTEXT")
+    @Column(columnDefinition = "TEXT")
     private String summary;
 
     @Size(max = 50, message = "Sentiment should not exceed 50 characters")

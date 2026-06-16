@@ -457,6 +457,8 @@ public class CallRecordController {
                         "userEmail"
                 );
 
+        System.out.println("EMAIL FROM JWT = " + email);
+
         User user =
                 userRepository.findByEmail(email)
                         .orElseThrow(() ->
@@ -464,6 +466,8 @@ public class CallRecordController {
                                         "User not found"
                                 )
                         );
+
+        System.out.println("USER FOUND = " + user.getEmail());
 
         return callRecordService
                 .getCallsByUserId(
