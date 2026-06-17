@@ -58,11 +58,25 @@ public class GoogleAuthService {
 
     public AuthResponse authenticateWithGoogle(GoogleAuthRequest request) {
 
+        if (request.getCredential() == null || request.getCredential().isBlank()) {
+            throw new RuntimeException("Missing Google credential in request");
+        }
+
         // ── 1. Verify the Google ID token ─────────────────────────────────────
         GoogleIdToken idToken = verifyToken(request.getCredential());
 
         if (idToken == null) {
-            throw new RuntimeException("Invalid Google token");
+            // Root-cause note: the most common reason verify() returns null
+            // is an audience (aud) mismatch — google.client.id in
+            // application.properties does not exactly match the client_id
+            // the frontend used to obtain the credential. Double-check both
+            // values character-for-character (including no trailing
+            // whitespace) if this exception appears.
+            throw new RuntimeException(
+                "Invalid Google token — verification failed. " +
+                "Check that google.client.id in application.properties exactly " +
+                "matches VITE_GOOGLE_CLIENT_ID used by the frontend."
+            );
         }
 
         GoogleIdToken.Payload payload = idToken.getPayload();
@@ -122,6 +136,14 @@ public class GoogleAuthService {
             return verifier.verify(credential);
 
         } catch (Exception e) {
+            // Previously this caught the exception and returned null with
+            // no logging — meaning every verification failure looked
+            // identical ("Invalid Google token") regardless of the actual
+            // cause (expired token, audience mismatch, malformed JWT,
+            // network error reaching Google's certs endpoint, etc).
+            // Logging here makes the real cause visible in server logs.
+            System.err.println("[GoogleAuthService] Token verification failed: "
+                    + e.getClass().getSimpleName() + " — " + e.getMessage());
             return null;
         }
     }

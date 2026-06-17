@@ -60,15 +60,27 @@ public class AuthController {
      * Accepts a raw Google ID token (credential) from the frontend,
      * verifies it server-side, and returns a Convexa JWT.
      * A new user account is created automatically on first sign-in.
+     *
+     * Errors from GoogleAuthService (e.g. audience mismatch, expired token)
+     * are caught here and returned as a 401 with the actual message, instead
+     * of bubbling up as an unhandled 500 with no body — which previously
+     * made every failure look identical on the frontend ("Google sign-in
+     * failed") regardless of the real cause.
      */
     @PostMapping("/google")
-    public ResponseEntity<AuthResponse> googleAuth(
+    public ResponseEntity<?> googleAuth(
             @RequestBody GoogleAuthRequest request
     ) {
+        try {
+            AuthResponse response =
+                    googleAuthService.authenticateWithGoogle(request);
 
-        AuthResponse response =
-                googleAuthService.authenticateWithGoogle(request);
+            return ResponseEntity.ok(response);
 
-        return ResponseEntity.ok(response);
+        } catch (RuntimeException e) {
+            return ResponseEntity
+                    .status(401)
+                    .body(java.util.Map.of("message", e.getMessage()));
+        }
     }
 }
