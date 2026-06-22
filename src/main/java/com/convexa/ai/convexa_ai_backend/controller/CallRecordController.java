@@ -6,7 +6,6 @@ import com.convexa.ai.convexa_ai_backend.repository.UserRepository;
 import com.convexa.ai.convexa_ai_backend.service.CallRecordService;
 import com.convexa.ai.convexa_ai_backend.service.CloudinaryService;
 import com.convexa.ai.convexa_ai_backend.service.CloudinaryService.CloudinaryUploadResult;
-import com.convexa.ai.convexa_ai_backend.dto.QualityScoreResponse;
 import com.convexa.ai.convexa_ai_backend.dto.TranscriptRequest;
 import jakarta.validation.Valid;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -22,6 +21,15 @@ import jakarta.servlet.http.HttpServletRequest;
 import com.convexa.ai.convexa_ai_backend.entity.User;
 
 import java.util.*;
+
+// ── REMOVED IMPORTS ────────────────────────────────────────────────────────────
+// QualityScoreResponse is no longer used — quality scores now come from
+// AnalyzeResponse (which already contained them). QualityScoreResponse was
+// only used by the old /quality-score proxy which has been commented out
+// since the previous refactor.
+//
+// import com.convexa.ai.convexa_ai_backend.dto.QualityScoreResponse;
+// ──────────────────────────────────────────────────────────────────────────────
 
 @RestController
 @RequestMapping("/api/calls")
@@ -42,6 +50,10 @@ public class CallRecordController {
     }
 
     private final RestTemplate restTemplate = new RestTemplate();
+
+    // ObjectMapper is reused across calls to avoid repeated instantiation cost.
+    // It is thread-safe when used without reconfiguration.
+    private final ObjectMapper objectMapper = new ObjectMapper();
 
     @PostMapping("/upload")
     public ResponseEntity<?> uploadAudio(
@@ -67,13 +79,6 @@ public class CallRecordController {
             // ===============================
             // UPLOAD AUDIO TO CLOUDINARY
             // ===============================
-            //
-            // Replaces the old local "uploads" folder write. The uploads
-            // directory is no longer used anywhere in this controller.
-            //
-            // CloudinaryService.uploadAudio() reads file.getBytes() directly
-            // (no temp file written to local disk) and returns the secure
-            // HTTPS URL + public_id needed for later deletion.
 
             CloudinaryUploadResult uploadResult =
                     cloudinaryService.uploadAudio(file);
@@ -81,20 +86,18 @@ public class CallRecordController {
             String cloudinaryUrl      = uploadResult.secureUrl();
             String cloudinaryPublicId = uploadResult.publicId();
 
-            // fileName is still stored for display purposes (e.g. "Recording 1.mp3")
             String fileName = file.getOriginalFilename() != null
                     ? file.getOriginalFilename()
                     : "recording_" + System.currentTimeMillis() + ".mp3";
 
             // ===============================
-            // SEND FILE TO FASTAPI (/transcribe)
+            // STEP 1 — TRANSCRIBE (FastAPI /transcribe)
             // ===============================
 
             HttpHeaders headers = new HttpHeaders();
             headers.setContentType(MediaType.MULTIPART_FORM_DATA);
 
             MultiValueMap<String, Object> body = new LinkedMultiValueMap<>();
-
             body.add("file", file.getResource());
 
             HttpEntity<MultiValueMap<String, Object>> requestEntity =
@@ -107,36 +110,34 @@ public class CallRecordController {
                             String.class
                     );
 
-            ObjectMapper objectMapper = new ObjectMapper();
-
             JsonNode jsonNode =
                     objectMapper.readTree(response.getBody());
 
             String transcript =
                     jsonNode.get("transcript").asText();
 
-            // ANalyze api
+            // ===============================
+            // STEP 2 — UNIFIED ANALYSIS (FastAPI /analyze)
+            //
+            // One call now returns: summary, sentiment, insights, all scores,
+            // strengths, improvements, keywords[], and timeline[].
+            //
+            // REMOVED: the separate POST to http://127.0.0.1:8000/keywords
+            // that used to run after /analyze. keywords is now a field of
+            // AnalyzeResponse (List<String> keywords) populated from the same
+            // Groq call.
+            // ===============================
 
-            String analyzeUrl =
-                    "http://127.0.0.1:8000/analyze";
+            String analyzeUrl = "http://127.0.0.1:8000/analyze";
 
             TranscriptRequest analyzeRequest =
-                    new TranscriptRequest(
-                            transcript
-                    );
+                    new TranscriptRequest(transcript);
 
-            HttpHeaders analyzeHeaders =
-                    new HttpHeaders();
-
-            analyzeHeaders.setContentType(
-                    MediaType.APPLICATION_JSON
-            );
+            HttpHeaders analyzeHeaders = new HttpHeaders();
+            analyzeHeaders.setContentType(MediaType.APPLICATION_JSON);
 
             HttpEntity<TranscriptRequest> analyzeEntity =
-                    new HttpEntity<>(
-                            analyzeRequest,
-                            analyzeHeaders
-                    );
+                    new HttpEntity<>(analyzeRequest, analyzeHeaders);
 
             ResponseEntity<AnalyzeResponse> analyzeResponse =
                     restTemplate.postForEntity(
@@ -145,200 +146,74 @@ public class CallRecordController {
                             AnalyzeResponse.class
                     );
 
-            AnalyzeResponse analyze =
-                    analyzeResponse.getBody();
+            AnalyzeResponse analyze = analyzeResponse.getBody();
 
+            String strengthsJson = "[]";
+            if (analyze.getStrengths() != null && !analyze.getStrengths().isEmpty()) {
+                try {
+                    strengthsJson = objectMapper.writeValueAsString(analyze.getStrengths());
+                } catch (Exception e) {
+                    strengthsJson = "[]";
+                }
+            }
 
-            // ===============================
-            // CALL SUMMARY API
-            // ===============================
+            String improvementsJson = "[]";
+            if (analyze.getImprovements() != null && !analyze.getImprovements().isEmpty()) {
+                try {
+                    improvementsJson = objectMapper.writeValueAsString(analyze.getImprovements());
+                } catch (Exception e) {
+                    improvementsJson = "[]";
+                }
+            }
 
-//            HttpHeaders summaryHeaders = new HttpHeaders();
-//            summaryHeaders.setContentType(MediaType.APPLICATION_JSON);
-//
-//            String summaryRequestBody =
-//                    """
-//                    {
-//                        "transcript": %s
-//                    }
-//                    """.formatted(
-//                            objectMapper.writeValueAsString(transcript)
-//                    );
-//
-//            HttpEntity<String> summaryRequest =
-//                    new HttpEntity<>(
-//                            summaryRequestBody,
-//                            summaryHeaders
-//                    );
-//
-//            ResponseEntity<String> summaryResponse =
-//                    restTemplate.postForEntity(
-//                            "http://127.0.0.1:8000/summary",
-//                            summaryRequest,
-//                            String.class
-//                    );
-//
-//            JsonNode summaryJson =
-//                    objectMapper.readTree(summaryResponse.getBody());
-//
-//            String summary =
-//                    summaryJson.get("summary").asText();
-//
-//            String sentimentUrl = "http://127.0.0.1:8000/sentiment";
-//
-//            String sentimentRequest =
-//                    "{\"transcript\":\"" +
-//                            transcript.replace("\"", "\\\"")
-//                            + "\"}";
-//
-//            HttpHeaders sentimentHeaders = new HttpHeaders();
-//            sentimentHeaders.setContentType(MediaType.APPLICATION_JSON);
-//
-//            HttpEntity<String> sentimentEntity =
-//                    new HttpEntity<>(sentimentRequest, sentimentHeaders);
-//
-//            ResponseEntity<String> sentimentResponse =
-//                    restTemplate.postForEntity(
-//                            sentimentUrl,
-//                            sentimentEntity,
-//                            String.class
-//                    );
-//
-//            JsonNode sentimentNode =
-//                    objectMapper.readTree(sentimentResponse.getBody());
-//
-//            String sentiment =
-//                    sentimentNode.get("sentiment").asText();
-//
-//            // ===============================
-//            // CALL INSIGHTS API
-//            // ===============================
-//
-//            String insightsUrl = "http://127.0.0.1:8000/insights";
-//
-//            Map<String, String> insightsRequest =
-//                    new HashMap<>();
-//
-//            insightsRequest.put(
-//                    "transcript",
-//                    transcript
-//            );
-//
-//            HttpHeaders insightsHeaders =
-//                    new HttpHeaders();
-//
-//            insightsHeaders.setContentType(
-//                    MediaType.APPLICATION_JSON
-//            );
-//
-//            HttpEntity<Map<String, String>> insightsEntity =
-//                    new HttpEntity<>(
-//                            insightsRequest,
-//                            insightsHeaders
-//                    );
-//
-//            ResponseEntity<String> insightsResponse =
-//                    restTemplate.postForEntity(
-//                            insightsUrl,
-//                            insightsEntity,
-//                            String.class
-//                    );
-//
-//            JsonNode insightsNode =
-//                    objectMapper.readTree(
-//                            insightsResponse.getBody()
-//                    );
-//
-//            String insights =
-//                    insightsNode.get("insights")
-//                            .asText();
-//
-//            // ===============================
-//            // CALL QUALITY SCORE API
-//            // ===============================
-//
-//            String qualityScoreUrl =
-//                    "http://127.0.0.1:8000/quality-score";
-//
-//            TranscriptRequest qualityRequest =
-//                    new TranscriptRequest(transcript);
-//
-//            HttpHeaders qualityHeaders =
-//                    new HttpHeaders();
-//
-//            qualityHeaders.setContentType(
-//                    MediaType.APPLICATION_JSON
-//            );
-//
-//            HttpEntity<TranscriptRequest> qualityEntity =
-//                    new HttpEntity<>(
-//                            qualityRequest,
-//                            qualityHeaders
-//                    );
-//
-//            ResponseEntity<QualityScoreResponse> qualityResponse =
-//                    restTemplate.postForEntity(
-//                            qualityScoreUrl,
-//                            qualityEntity,
-//                            QualityScoreResponse.class
-//                    );
-//
-//            QualityScoreResponse qualityScore =
-//                    qualityResponse.getBody();
+            // ── OLD: separate /keywords call — REMOVED ────────────────────────
+            //
+            // Previously a second HTTP call was made to http://127.0.0.1:8000/keywords
+            // which returned {"keywords": ["kw1", "kw2", ...]}.
+            // That endpoint no longer exists in FastAPI — keywords are now
+            // included in the /analyze response as analyze.getKeywords().
+            //
+            // String keywordsUrl = "http://127.0.0.1:8000/keywords";
+            // Map<String, String> keywordsRequest = new HashMap<>();
+            // keywordsRequest.put("transcript", transcript);
+            // HttpHeaders keywordsHeaders = new HttpHeaders();
+            // keywordsHeaders.setContentType(MediaType.APPLICATION_JSON);
+            // HttpEntity<Map<String, String>> keywordsEntity = new HttpEntity<>(keywordsRequest, keywordsHeaders);
+            // ResponseEntity<String> keywordsResponse = restTemplate.postForEntity(keywordsUrl, keywordsEntity, String.class);
+            // JsonNode keywordsNode = objectMapper.readTree(keywordsResponse.getBody());
+            // JsonNode keywordsArray = keywordsNode.get("keywords");
+            // List<String> keywordList = new ArrayList<>();
+            // keywordsArray.forEach(node -> keywordList.add(node.asText()));
+            // String keywords = String.join(", ", keywordList);
+            // ─────────────────────────────────────────────────────────────────
 
-            // ===============================
-            // Keywords Extraction
-            // ===============================
+            // ── Build keywords string from /analyze response ──────────────────
+            //
+            // analyze.getKeywords() is a List<String> deserialized directly
+            // from the Groq JSON. We join it with ", " to match the format
+            // already stored in CallRecord.keywords (TEXT column).
+            // Null-safe: if the model failed to return keywords we default to "".
+            String keywords = (analyze.getKeywords() != null && !analyze.getKeywords().isEmpty())
+                    ? String.join(", ", analyze.getKeywords())
+                    : "";
 
-
-            String keywordsUrl =
-                    "http://127.0.0.1:8000/keywords";
-
-            Map<String, String> keywordsRequest =
-                    new HashMap<>();
-
-            keywordsRequest.put(
-                    "transcript",
-                    transcript
-            );
-
-            HttpHeaders keywordsHeaders =
-                    new HttpHeaders();
-
-            keywordsHeaders.setContentType(
-                    MediaType.APPLICATION_JSON
-            );
-
-            HttpEntity<Map<String, String>> keywordsEntity =
-                    new HttpEntity<>(
-                            keywordsRequest,
-                            keywordsHeaders
-                    );
-
-            ResponseEntity<String> keywordsResponse =
-                    restTemplate.postForEntity(
-                            keywordsUrl,
-                            keywordsEntity,
-                            String.class
-                    );
-
-            JsonNode keywordsNode =
-                    objectMapper.readTree(
-                            keywordsResponse.getBody()
-                    );
-
-            JsonNode keywordsArray =
-                    keywordsNode.get("keywords");
-
-
-            List<String> keywordList =
-                    new ArrayList<>();
-
-            keywordsArray.forEach(node ->
-                    keywordList.add(node.asText()));
-
-            String keywords =
-                    String.join(", ", keywordList);
+            // ── Serialize timeline to JSON string ─────────────────────────────
+            //
+            // analyze.getTimeline() is List<Map<String,String>>.
+            // We serialize it to a compact JSON string for storage in the
+            // CallRecord.timeline TEXT column.
+            // The frontend will JSON.parse() it back to an array.
+            // If the model returned no timeline, store "[]" so JSON.parse
+            // never throws on the frontend.
+            String timelineJson = "[]";
+            if (analyze.getTimeline() != null && !analyze.getTimeline().isEmpty()) {
+                try {
+                    timelineJson = objectMapper.writeValueAsString(analyze.getTimeline());
+                } catch (Exception e) {
+                    // Non-fatal — an empty timeline is better than a failed upload
+                    timelineJson = "[]";
+                }
+            }
 
             // ===============================
             // SAVE TO DATABASE
@@ -349,52 +224,18 @@ public class CallRecordController {
                     .cloudinaryUrl(cloudinaryUrl)
                     .cloudinaryPublicId(cloudinaryPublicId)
                     .transcript(transcript)
-                    .summary(
-                            analyze.getSummary()
-                    )
-
-                    .sentiment(
-                            analyze.getSentiment()
-                    )
-
-                    .insights(
-                            analyze.getInsights()
-                    )
-
-                    .overallScore(
-                            analyze.getOverallScore()
-                    )
-
-                    .communication(
-                            analyze.getCommunication()
-                    )
-
-                    .problemResolution(
-                            analyze.getProblemResolution()
-                    )
-
-                    .professionalism(
-                            analyze.getProfessionalism()
-                    )
-
-                    .customerSatisfaction(
-                            analyze.getCustomerSatisfaction()
-                    )
-
-                    .strengths(
-                            String.join(
-                                    ", ",
-                                    analyze.getStrengths()
-                            )
-                    )
-
-                    .improvements(
-                            String.join(
-                                    ", ",
-                                    analyze.getImprovements()
-                            )
-                    )
+                    .summary(analyze.getSummary())
+                    .sentiment(analyze.getSentiment())
+                    .insights(analyze.getInsights())
+                    .overallScore(analyze.getOverallScore())
+                    .communication(analyze.getCommunication())
+                    .problemResolution(analyze.getProblemResolution())
+                    .professionalism(analyze.getProfessionalism())
+                    .customerSatisfaction(analyze.getCustomerSatisfaction())
+                    .strengths(strengthsJson)       // CHANGED: JSON array string, not comma-joined
+                    .improvements(improvementsJson) // CHANGED: JSON array string, not comma-joined
                     .keywords(keywords)
+                    .timeline(timelineJson) // NEW — persisted from /analyze response
                     .status("COMPLETED")
                     .user(user)
                     .build();
@@ -439,9 +280,6 @@ public class CallRecordController {
     // DELETE CALL RECORD
     //
     // Deletes the Cloudinary asset first, then the database row.
-    // Cloudinary deletion failure is logged (inside CloudinaryService) but
-    // never blocks the database deletion — an orphaned Cloudinary asset is
-    // a much smaller problem than a record the user can't remove from the UI.
     @DeleteMapping("/{id}")
     public String deleteCallRecord(@PathVariable Long id) {
         CallRecord existing = callRecordService.getCallRecordById(id);
@@ -482,47 +320,35 @@ public class CallRecordController {
                 );
     }
 
-    // NOTE: filename sanitisation is no longer needed here. Cloudinary
-    // generates its own safe public_id (see CloudinaryService.buildPublicId),
-    // and the cloudinaryUrl returned by Cloudinary is already a complete,
-    // correctly-encoded HTTPS URL — no manual encoding is required anywhere
-    // this URL is consumed.
-
-
-    @PostMapping("/timeline")
-    public ResponseEntity<?> generateTimeline(
-            @RequestBody Map<String, String> body
-    ) {
-        try {
-            String transcript = body.get("transcript");
-            if (transcript == null || transcript.isBlank()) {
-                return ResponseEntity.badRequest().body("transcript is required");
-            }
-
-            HttpHeaders headers = new HttpHeaders();
-            headers.setContentType(MediaType.APPLICATION_JSON);
-
-            HttpEntity<Map<String, String>> request = new HttpEntity<>(
-                    Map.of("transcript", transcript),
-                    headers
-            );
-
-            ResponseEntity<String> response = restTemplate.postForEntity(
-                    "http://127.0.0.1:8000/timeline",
-                    request,
-                    String.class
-            );
-
-            // Return the FastAPI response directly — it's already a JSON array
-            return ResponseEntity
-                    .status(response.getStatusCode())
-                    .contentType(MediaType.APPLICATION_JSON)
-                    .body(response.getBody());
-
-        } catch (Exception e) {
-            e.printStackTrace();
-            // Return an empty timeline instead of an error so the UI degrades gracefully
-            return ResponseEntity.ok("[]");
-        }
-    }
+    // ── REMOVED: POST /api/calls/timeline ─────────────────────────────────────
+    //
+    // This endpoint proxied to http://127.0.0.1:8000/timeline which no longer
+    // exists in the FastAPI service (timeline is now returned as part of the
+    // unified /analyze response and stored in CallRecord.timeline).
+    //
+    // The frontend (CallDetailsPage.jsx) previously fetched this on-demand when
+    // the Timeline tab was opened. It now reads call.timeline directly from the
+    // CallRecord object already loaded at page load — no extra fetch needed.
+    //
+    // @PostMapping("/timeline")
+    // public ResponseEntity<?> generateTimeline(@RequestBody Map<String, String> body) {
+    //     try {
+    //         String transcript = body.get("transcript");
+    //         if (transcript == null || transcript.isBlank()) {
+    //             return ResponseEntity.badRequest().body("transcript is required");
+    //         }
+    //         HttpHeaders headers = new HttpHeaders();
+    //         headers.setContentType(MediaType.APPLICATION_JSON);
+    //         HttpEntity<Map<String, String>> request = new HttpEntity<>(Map.of("transcript", transcript), headers);
+    //         ResponseEntity<String> response = restTemplate.postForEntity(
+    //                 "http://127.0.0.1:8000/timeline", request, String.class);
+    //         return ResponseEntity.status(response.getStatusCode())
+    //                 .contentType(MediaType.APPLICATION_JSON)
+    //                 .body(response.getBody());
+    //     } catch (Exception e) {
+    //         e.printStackTrace();
+    //         return ResponseEntity.ok("[]");
+    //     }
+    // }
+    // ─────────────────────────────────────────────────────────────────────────
 }

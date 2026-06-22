@@ -26,16 +26,6 @@ public class CallRecord {
     private String fileName;
 
     // ── Cloudinary storage fields ─────────────────────────────────────────────
-    // Replaces the old `filePath` column (local disk path).
-    //
-    // cloudinaryUrl      — the HTTPS URL returned by Cloudinary after upload.
-    //                      This is what the frontend <audio src> points to.
-    //                      Example: https://res.cloudinary.com/your-cloud/video/upload/...
-    //
-    // cloudinaryPublicId — the Cloudinary resource identifier.
-    //                      Required to delete the asset via the Cloudinary API.
-    //                      Example: convexa-ai-recordings/my_call_recording
-    // ─────────────────────────────────────────────────────────────────────────
     @Column(length = 1000)
     private String cloudinaryUrl;
 
@@ -73,6 +63,28 @@ public class CallRecord {
 
     @Column(columnDefinition = "TEXT")
     private String keywords;
+
+    // ── NEW: timeline ──────────────────────────────────────────────────────────
+    //
+    // Stores the conversation timeline as a JSON string.
+    // Format: [{"time":"00:00","title":"Greeting"}, ...]
+    //
+    // Previously the frontend fetched the timeline on-demand from
+    // POST /api/calls/timeline → FastAPI /timeline.
+    // That FastAPI endpoint no longer exists (merged into /analyze).
+    // The Spring Boot /api/calls/timeline proxy endpoint is also removed.
+    //
+    // Now the controller serializes AnalyzeResponse.getTimeline() to JSON
+    // using ObjectMapper and stores it here at upload time.
+    // GET /api/calls/{id} returns it in the response body.
+    // The frontend parses it with JSON.parse() — no extra network call needed.
+    //
+    // DB migration note: this adds one nullable TEXT column.
+    // Existing rows will have timeline = NULL; the frontend already handles
+    // null/empty timeline gracefully via its buildFallbackTimeline() function.
+    // ─────────────────────────────────────────────────────────────────────────
+    @Column(columnDefinition = "TEXT")
+    private String timeline;
 
     private String status;
 
