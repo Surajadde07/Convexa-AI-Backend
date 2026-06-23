@@ -9,6 +9,7 @@ import com.convexa.ai.convexa_ai_backend.service.CloudinaryService.CloudinaryUpl
 import com.convexa.ai.convexa_ai_backend.dto.TranscriptRequest;
 import jakarta.validation.Valid;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.*;
 import org.springframework.util.LinkedMultiValueMap;
 import org.springframework.util.MultiValueMap;
@@ -31,6 +32,8 @@ import java.util.*;
 // import com.convexa.ai.convexa_ai_backend.dto.QualityScoreResponse;
 // ──────────────────────────────────────────────────────────────────────────────
 
+
+
 @RestController
 @RequestMapping("/api/calls")
 @CrossOrigin("*")
@@ -39,6 +42,8 @@ public class CallRecordController {
     @Autowired
     private CallRecordService callRecordService;
 
+    @Value("${ai.service.url}")
+    private String aiServiceUrl;
     @Autowired
     private UserRepository userRepository;
 
@@ -105,7 +110,7 @@ public class CallRecordController {
 
             ResponseEntity<String> response =
                     restTemplate.postForEntity(
-                            "http://127.0.0.1:8000/transcribe",
+                            aiServiceUrl +"/transcribe",
                             requestEntity,
                             String.class
                     );
@@ -128,7 +133,7 @@ public class CallRecordController {
             // Groq call.
             // ===============================
 
-            String analyzeUrl = "http://127.0.0.1:8000/analyze";
+            String analyzeUrl = aiServiceUrl + "/analyze";
 
             TranscriptRequest analyzeRequest =
                     new TranscriptRequest(transcript);
