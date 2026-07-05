@@ -64,27 +64,86 @@ public class CallRecord {
     @Column(columnDefinition = "TEXT")
     private String keywords;
 
-    // ── NEW: timeline ──────────────────────────────────────────────────────────
-    //
+    // ── timeline ───────────────────────────────────────────────────────────────
     // Stores the conversation timeline as a JSON string.
     // Format: [{"time":"00:00","title":"Greeting"}, ...]
-    //
-    // Previously the frontend fetched the timeline on-demand from
-    // POST /api/calls/timeline → FastAPI /timeline.
-    // That FastAPI endpoint no longer exists (merged into /analyze).
-    // The Spring Boot /api/calls/timeline proxy endpoint is also removed.
-    //
-    // Now the controller serializes AnalyzeResponse.getTimeline() to JSON
-    // using ObjectMapper and stores it here at upload time.
-    // GET /api/calls/{id} returns it in the response body.
-    // The frontend parses it with JSON.parse() — no extra network call needed.
-    //
-    // DB migration note: this adds one nullable TEXT column.
-    // Existing rows will have timeline = NULL; the frontend already handles
-    // null/empty timeline gracefully via its buildFallbackTimeline() function.
+    // Serialized from AnalyzeResponse.getTimeline() (List<Map<String,String>>)
+    // by the controller using ObjectMapper at upload time.
+    // Existing rows: NULL — frontend handles gracefully via buildFallbackTimeline().
     // ─────────────────────────────────────────────────────────────────────────
     @Column(columnDefinition = "TEXT")
     private String timeline;
+
+    // ── Sprint 1 new fields ────────────────────────────────────────────────────
+    //
+    // All nine new fields follow the same storage convention already used by
+    // timeline, strengths, and improvements: complex structures (arrays,
+    // objects) are serialized to JSON strings by the controller using
+    // ObjectMapper before being saved, and deserialized by the frontend with
+    // JSON.parse().  Scalar strings (outcomeStatus, callType, buyingIntent)
+    // are stored directly.
+    //
+    // Every column is nullable TEXT so that existing rows without these values
+    // load without error — Hibernate simply returns null for missing columns
+    // and the controller/frontend apply safe defaults at read time.
+    //
+    // ── outcomeStatus ──
+    // Scalar string. One of: Won | Lost | Follow Up Required | Escalated | Pending
+    // Stored as a plain VARCHAR-compatible string (no columnDefinition needed
+    // since it never exceeds 50 chars, but TEXT keeps it consistent).
+    @Column(columnDefinition = "TEXT")
+    private String outcomeStatus;
+
+    // ── actionItems ──
+    // JSON array of objects: [{"title":"...","completed":false}, ...]
+    // Serialized from AnalyzeResponse.getActionItems() (List<Map<String,Object>>).
+    // "completed" is a boolean in the JSON; we use Map<String,Object> in the DTO
+    // so Jackson preserves the boolean type rather than coercing to String.
+    @Column(columnDefinition = "TEXT")
+    private String actionItems;
+
+    // ── riskFlags ──
+    // JSON array of objects: [{"severity":"High","message":"..."}, ...]
+    // Serialized from AnalyzeResponse.getRiskFlags() (List<Map<String,String>>).
+    @Column(columnDefinition = "TEXT")
+    private String riskFlags;
+
+    // ── followUpSuggestions ──
+    // JSON array of strings: ["Suggestion 1", "Suggestion 2", ...]
+    // Serialized from AnalyzeResponse.getFollowUpSuggestions() (List<String>).
+    @Column(columnDefinition = "TEXT")
+    private String followUpSuggestions;
+
+    // ── confidence ──
+    // Integer 0-100. AI self-reported confidence in the accuracy of its output.
+    // Stored as Integer (nullable) — null means the field was absent (old record).
+    private Integer confidence;
+
+    // ── callType ──
+    // Scalar string. One of: Inbound Support | Outbound Sales | Renewal |
+    // Onboarding | Escalation | Collections | Follow-Up | Discovery | Demo | Negotiation
+    @Column(columnDefinition = "TEXT")
+    private String callType;
+
+    // ── buyingIntent ──
+    // Scalar string. One of: High | Medium | Low | None | N/A
+    @Column(columnDefinition = "TEXT")
+    private String buyingIntent;
+
+    // ── buyingSignals ──
+    // JSON array of strings: ["Signal 1", "Signal 2", ...]
+    // Serialized from AnalyzeResponse.getBuyingSignals() (List<String>).
+    @Column(columnDefinition = "TEXT")
+    private String buyingSignals;
+
+    // ── objections ──
+    // JSON array of objects: [{"objection":"...","resolved":true}, ...]
+    // Serialized from AnalyzeResponse.getObjections() (List<Map<String,Object>>).
+    // "resolved" is a boolean; Map<String,Object> preserves the type.
+    @Column(columnDefinition = "TEXT")
+    private String objections;
+
+    // ─────────────────────────────────────────────────────────────────────────
 
     private String status;
 

@@ -27,22 +27,75 @@ public class AnalyzeResponse {
 
     private List<String> improvements;
 
-    // ── NEW: added for Groq unified /analyze response ─────────────────────────
+    // ── Existing Sprint 0 fields ───────────────────────────────────────────────
     //
-    // keywords — the Groq prompt now returns keywords[] directly inside the
-    //   /analyze JSON instead of requiring a separate /keywords API call.
-    //   Jackson maps the JSON array straight to List<String>.
-    //   The controller joins this list with ", " before saving to CallRecord.keywords.
+    // keywords — returned by /analyze as a JSON array of strings.
+    //   Jackson maps it to List<String>. The controller joins with ", " before
+    //   saving to CallRecord.keywords (TEXT column).
     //
-    // timeline — the Groq prompt now returns timeline[] inside /analyze.
-    //   Each element is {"time": "MM:SS", "title": "Phase Name"}.
-    //   We use Map<String,String> to avoid needing a new DTO class — the two
-    //   keys "time" and "title" are always strings so Map<String,String> is
-    //   the correct, minimal representation.
-    //   The controller serializes this list to a JSON string before saving to
-    //   CallRecord.timeline (TEXT column added in CallRecord.java).
+    // timeline — returned by /analyze as a JSON array of objects.
+    //   Each element: {"time": "MM:SS", "title": "Phase Name"}.
+    //   Map<String,String> is correct because both keys are always strings.
+    //   The controller serializes to a JSON string for CallRecord.timeline.
     // ─────────────────────────────────────────────────────────────────────────
     private List<String> keywords;
 
     private List<Map<String, String>> timeline;
+
+    // ── Sprint 1 new fields ────────────────────────────────────────────────────
+    //
+    // outcomeStatus — scalar string enum from FastAPI.
+    //   One of: Won | Lost | Follow Up Required | Escalated | Pending
+    //   Stored directly in CallRecord.outcomeStatus (TEXT column).
+    //
+    // actionItems — JSON array of objects: [{"title":"...","completed":false}]
+    //   "completed" is a JSON boolean so we use Map<String,Object> to preserve
+    //   the boolean type. Map<String,String> would coerce it to the string
+    //   "false", breaking any frontend boolean check.
+    //   The controller serializes to JSON string → CallRecord.actionItems.
+    //
+    // riskFlags — JSON array of objects: [{"severity":"High","message":"..."}]
+    //   Both values are strings so Map<String,String> is correct here.
+    //   The controller serializes to JSON string → CallRecord.riskFlags.
+    //
+    // followUpSuggestions — JSON array of plain strings.
+    //   List<String> maps directly. Controller serializes → CallRecord.followUpSuggestions.
+    //
+    // confidence — integer 0-100. Jackson maps JSON number → Integer.
+    //   Stored as Integer column (nullable). Old rows return null.
+    //
+    // callType — scalar string enum.
+    //   One of: Inbound Support | Outbound Sales | Renewal | Onboarding |
+    //   Escalation | Collections | Follow-Up | Discovery | Demo | Negotiation
+    //   Stored directly in CallRecord.callType.
+    //
+    // buyingIntent — scalar string enum.
+    //   One of: High | Medium | Low | None | N/A
+    //   Stored directly in CallRecord.buyingIntent.
+    //
+    // buyingSignals — JSON array of plain strings.
+    //   List<String> maps directly. Controller serializes → CallRecord.buyingSignals.
+    //
+    // objections — JSON array of objects: [{"objection":"...","resolved":true}]
+    //   "resolved" is a JSON boolean so Map<String,Object> preserves the type.
+    //   Controller serializes → CallRecord.objections.
+    // ─────────────────────────────────────────────────────────────────────────
+
+    private String outcomeStatus;
+
+    private List<Map<String, Object>> actionItems;
+
+    private List<Map<String, String>> riskFlags;
+
+    private List<String> followUpSuggestions;
+
+    private Integer confidence;
+
+    private String callType;
+
+    private String buyingIntent;
+
+    private List<String> buyingSignals;
+
+    private List<Map<String, Object>> objections;
 }

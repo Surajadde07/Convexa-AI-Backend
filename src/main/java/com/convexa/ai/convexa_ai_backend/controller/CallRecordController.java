@@ -220,6 +220,94 @@ public class CallRecordController {
                 }
             }
 
+            // ── Sprint 1: serialize new complex fields to JSON strings ─────────
+            //
+            // Convention: every List/Map field follows the same pattern as
+            // timelineJson above — serialize to "[]" on null/error so the
+            // frontend can always safely call JSON.parse() without crashing.
+            // Scalar string fields (outcomeStatus, callType, buyingIntent) are
+            // stored directly with a null-safe fallback string.
+            //
+            // ── outcomeStatus (scalar) ─────────────────────────────────────────
+            String outcomeStatus = (analyze.getOutcomeStatus() != null)
+                    ? analyze.getOutcomeStatus()
+                    : "Pending";
+
+            // ── actionItems → JSON string ──────────────────────────────────────
+            // List<Map<String,Object>> — "completed" is a boolean so we must
+            // use Object value type; serializing with Map<String,String> would
+            // produce "completed":"false" (a string), which the frontend's
+            // boolean check would misread as truthy.
+            String actionItemsJson = "[]";
+            if (analyze.getActionItems() != null && !analyze.getActionItems().isEmpty()) {
+                try {
+                    actionItemsJson = objectMapper.writeValueAsString(analyze.getActionItems());
+                } catch (Exception e) {
+                    actionItemsJson = "[]";
+                }
+            }
+
+            // ── riskFlags → JSON string ────────────────────────────────────────
+            // List<Map<String,String>> — both "severity" and "message" are strings.
+            String riskFlagsJson = "[]";
+            if (analyze.getRiskFlags() != null && !analyze.getRiskFlags().isEmpty()) {
+                try {
+                    riskFlagsJson = objectMapper.writeValueAsString(analyze.getRiskFlags());
+                } catch (Exception e) {
+                    riskFlagsJson = "[]";
+                }
+            }
+
+            // ── followUpSuggestions → JSON string ──────────────────────────────
+            // List<String> — plain string array, same pattern as strengths/improvements.
+            String followUpSuggestionsJson = "[]";
+            if (analyze.getFollowUpSuggestions() != null && !analyze.getFollowUpSuggestions().isEmpty()) {
+                try {
+                    followUpSuggestionsJson = objectMapper.writeValueAsString(analyze.getFollowUpSuggestions());
+                } catch (Exception e) {
+                    followUpSuggestionsJson = "[]";
+                }
+            }
+
+            // ── confidence (scalar Integer) ────────────────────────────────────
+            // Stored as nullable Integer column — null is fine for old records.
+            // No serialization needed; Hibernate maps Integer → SQL INTEGER.
+            Integer confidence = analyze.getConfidence();
+
+            // ── callType (scalar) ──────────────────────────────────────────────
+            String callType = (analyze.getCallType() != null)
+                    ? analyze.getCallType()
+                    : "Inbound Support";
+
+            // ── buyingIntent (scalar) ──────────────────────────────────────────
+            String buyingIntent = (analyze.getBuyingIntent() != null)
+                    ? analyze.getBuyingIntent()
+                    : "N/A";
+
+            // ── buyingSignals → JSON string ────────────────────────────────────
+            // List<String> — same pattern as followUpSuggestions.
+            String buyingSignalsJson = "[]";
+            if (analyze.getBuyingSignals() != null && !analyze.getBuyingSignals().isEmpty()) {
+                try {
+                    buyingSignalsJson = objectMapper.writeValueAsString(analyze.getBuyingSignals());
+                } catch (Exception e) {
+                    buyingSignalsJson = "[]";
+                }
+            }
+
+            // ── objections → JSON string ───────────────────────────────────────
+            // List<Map<String,Object>> — "resolved" is a boolean, same reasoning
+            // as actionItems: use Object value type to preserve the boolean.
+            String objectionsJson = "[]";
+            if (analyze.getObjections() != null && !analyze.getObjections().isEmpty()) {
+                try {
+                    objectionsJson = objectMapper.writeValueAsString(analyze.getObjections());
+                } catch (Exception e) {
+                    objectionsJson = "[]";
+                }
+            }
+            // ─────────────────────────────────────────────────────────────────
+
             // ===============================
             // SAVE TO DATABASE
             // ===============================
@@ -237,10 +325,21 @@ public class CallRecordController {
                     .problemResolution(analyze.getProblemResolution())
                     .professionalism(analyze.getProfessionalism())
                     .customerSatisfaction(analyze.getCustomerSatisfaction())
-                    .strengths(strengthsJson)       // CHANGED: JSON array string, not comma-joined
-                    .improvements(improvementsJson) // CHANGED: JSON array string, not comma-joined
+                    .strengths(strengthsJson)           // JSON array string
+                    .improvements(improvementsJson)     // JSON array string
                     .keywords(keywords)
-                    .timeline(timelineJson) // NEW — persisted from /analyze response
+                    .timeline(timelineJson)             // JSON array string
+                    // ── Sprint 1 new fields ────────────────────────────────
+                    .outcomeStatus(outcomeStatus)       // scalar string
+                    .actionItems(actionItemsJson)       // JSON array of objects
+                    .riskFlags(riskFlagsJson)           // JSON array of objects
+                    .followUpSuggestions(followUpSuggestionsJson) // JSON array of strings
+                    .confidence(confidence)             // nullable Integer
+                    .callType(callType)                 // scalar string
+                    .buyingIntent(buyingIntent)         // scalar string
+                    .buyingSignals(buyingSignalsJson)   // JSON array of strings
+                    .objections(objectionsJson)         // JSON array of objects
+                    // ──────────────────────────────────────────────────────
                     .status("COMPLETED")
                     .user(user)
                     .build();
