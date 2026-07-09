@@ -106,6 +106,7 @@ public class GoogleAuthService {
                     .name(name)
                     .password(passwordEncoder.encode(UUID.randomUUID().toString()))
                     .role("USER")
+                    .provider("GOOGLE")
                     .build();
             userRepository.save(user);
         }
