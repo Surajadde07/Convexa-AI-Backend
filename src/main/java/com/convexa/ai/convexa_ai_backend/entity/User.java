@@ -30,7 +30,8 @@ public class User {
     @Column(nullable = false)
     private String password;
 
-    private String role;
+    @Enumerated(EnumType.STRING)
+    private Role role;
 
     // "LOCAL" (email/password signup) or "GOOGLE" (OAuth signup). Set at
     // creation in UserService.register() / GoogleAuthService, defaulted
@@ -53,7 +54,7 @@ public class User {
 
         if (this.role == null) {
 
-            this.role = "USER";
+            this.role = Role.USER;
         }
 
         if (this.provider == null) {

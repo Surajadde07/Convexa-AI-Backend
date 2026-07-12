@@ -55,6 +55,18 @@ public class SecurityConfig {
                                 "/audio/**"
                         ).permitAll()
 
+                        // Sprint 2 infrastructure: no controller lives under
+                        // /api/company/** yet, but gating it now means the
+                        // CompanyController Sprint 2 adds is protected from
+                        // the moment it's created, with no further
+                        // SecurityConfig changes needed. USER-authenticated-
+                        // but-wrong-role requests get Spring Security's
+                        // default 403 here automatically — no custom
+                        // AccessDeniedHandler required.
+                        .requestMatchers(
+                                "/api/company/**"
+                        ).hasAnyRole("MANAGER", "ADMIN")
+
                         .anyRequest()
                         .authenticated()
                 )

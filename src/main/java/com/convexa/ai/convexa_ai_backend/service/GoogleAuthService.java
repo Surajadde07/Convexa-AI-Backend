@@ -2,6 +2,7 @@ package com.convexa.ai.convexa_ai_backend.service;
 
 import com.convexa.ai.convexa_ai_backend.dto.AuthResponse;
 import com.convexa.ai.convexa_ai_backend.dto.GoogleAuthRequest;
+import com.convexa.ai.convexa_ai_backend.entity.Role;
 import com.convexa.ai.convexa_ai_backend.entity.User;
 import com.convexa.ai.convexa_ai_backend.repository.UserRepository;
 
@@ -105,7 +106,7 @@ public class GoogleAuthService {
                     .email(email)
                     .name(name)
                     .password(passwordEncoder.encode(UUID.randomUUID().toString()))
-                    .role("USER")
+                    .role(Role.USER)
                     .provider("GOOGLE")
                     .build();
             userRepository.save(user);
@@ -119,7 +120,7 @@ public class GoogleAuthService {
                 .id(user.getId())
                 .name(user.getName())
                 .email(user.getEmail())
-                .role(user.getRole())
+                .role(user.getRole().name())
                 .build();
     }
 

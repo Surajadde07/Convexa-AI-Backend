@@ -3,6 +3,7 @@ package com.convexa.ai.convexa_ai_backend.service;
 import com.convexa.ai.convexa_ai_backend.dto.AuthResponse;
 import com.convexa.ai.convexa_ai_backend.dto.LoginRequest;
 import com.convexa.ai.convexa_ai_backend.dto.RegisterRequest;
+import com.convexa.ai.convexa_ai_backend.entity.Role;
 import com.convexa.ai.convexa_ai_backend.entity.User;
 import com.convexa.ai.convexa_ai_backend.repository.UserRepository;
 
@@ -43,7 +44,7 @@ public class UserService {
                                 request.getPassword()
                         )
                 )
-                .role("USER")
+                .role(Role.USER)
                 .build();
 
         User savedUser =
@@ -58,7 +59,7 @@ public class UserService {
                 savedUser.getId(),
                 savedUser.getName(),
                 savedUser.getEmail(),
-                savedUser.getRole(),
+                savedUser.getRole().name(),
                 token,
                 "Registration successful"
         );
@@ -100,7 +101,7 @@ public class UserService {
                 user.getId(),
                 user.getName(),
                 user.getEmail(),
-                user.getRole(),
+                user.getRole().name(),
                 token,
                 "Login successful"
         );

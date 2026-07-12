@@ -1,5 +1,7 @@
 package com.convexa.ai.convexa_ai_backend.security;
 
+import com.convexa.ai.convexa_ai_backend.entity.User;
+import com.convexa.ai.convexa_ai_backend.repository.UserRepository;
 import com.convexa.ai.convexa_ai_backend.service.JwtService;
 
 import jakarta.servlet.FilterChain;
@@ -22,6 +24,9 @@ public class JwtFilter extends OncePerRequestFilter {
 
     @Autowired
     private JwtService jwtService;
+
+    @Autowired
+    private UserRepository userRepository;
 
     @Override
     protected void doFilterInternal(
@@ -57,13 +62,27 @@ public class JwtFilter extends OncePerRequestFilter {
                     email
             );
 
+            // Role is deliberately NOT stored in the JWT itself (see Sprint 1.5
+            // notes) — reading it fresh from the DB on every request means a
+            // promotion/demotion takes effect on the user's very next request,
+            // not "after they log out and back in". Every controller in this
+            // app already re-fetches the User by email per-request anyway, so
+            // this is the same query pattern, not new overhead.
+            User user = userRepository.findByEmail(email).orElse(null);
+
+            if (user == null) {
+                response.setStatus(HttpServletResponse.SC_UNAUTHORIZED);
+                response.getWriter().write("Invalid Token");
+                return;
+            }
+
             UsernamePasswordAuthenticationToken authentication =
                     new UsernamePasswordAuthenticationToken(
                             email,
                             null,
                             List.of(
                                     new SimpleGrantedAuthority(
-                                            "ROLE_USER"
+                                            "ROLE_" + user.getRole().name()
                                     )
                             )
                     );
