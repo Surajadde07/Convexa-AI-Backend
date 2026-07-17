@@ -19,4 +19,12 @@ public class AuthResponse {
     private String token;
 
     private String message;
+
+    private String companyName;
+
+    private String companyLogo;
+
+    private String department;
+
+    private String managerName;
 }

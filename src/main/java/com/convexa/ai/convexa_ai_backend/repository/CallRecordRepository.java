@@ -12,4 +12,6 @@ public interface CallRecordRepository
 
     List<CallRecord> findByUserId(Long userId);
 
+    List<CallRecord> findByUserCompanyId(Long companyId);
+
 }

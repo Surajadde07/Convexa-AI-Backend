@@ -6,6 +6,7 @@ import com.convexa.ai.convexa_ai_backend.dto.RegisterRequest;
 import com.convexa.ai.convexa_ai_backend.entity.Role;
 import com.convexa.ai.convexa_ai_backend.entity.User;
 import com.convexa.ai.convexa_ai_backend.repository.UserRepository;
+import java.util.List;
 
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
@@ -55,14 +56,7 @@ public class UserService {
                         savedUser.getEmail()
                 );
 
-        return new AuthResponse(
-                savedUser.getId(),
-                savedUser.getName(),
-                savedUser.getEmail(),
-                savedUser.getRole().name(),
-                token,
-                "Registration successful"
-        );
+        return buildAuthResponse(savedUser, token, "Registration successful");
     }
 
     // =========================
@@ -97,13 +91,41 @@ public class UserService {
                         user.getEmail()
                 );
 
-        return new AuthResponse(
-                user.getId(),
-                user.getName(),
-                user.getEmail(),
-                user.getRole().name(),
-                token,
-                "Login successful"
-        );
+        return buildAuthResponse(user, token, "Login successful");
+    }
+
+    public AuthResponse buildAuthResponse(User user, String token, String message) {
+        String companyName = null;
+        String companyLogo = null;
+        String managerName = "System Manager";
+
+        if (user.getCompany() != null) {
+            companyName = user.getCompany().getCompanyName();
+            companyLogo = user.getCompany().getCompanyLogo();
+            if (companyLogo == null || companyLogo.isBlank()) {
+                companyLogo = "https://via.placeholder.com/150?text=Convexa+AI";
+            }
+            
+            List<User> companyUsers = userRepository.findByCompanyId(user.getCompany().getId());
+            for (User cu : companyUsers) {
+                if (cu.getRole() == Role.MANAGER || cu.getRole() == Role.ADMIN) {
+                    managerName = cu.getName() != null && !cu.getName().isBlank() ? cu.getName() : cu.getEmail();
+                    break;
+                }
+            }
+        }
+
+        return AuthResponse.builder()
+                .id(user.getId())
+                .name(user.getName())
+                .email(user.getEmail())
+                .role(user.getRole().name())
+                .token(token)
+                .message(message)
+                .companyName(companyName)
+                .companyLogo(companyLogo)
+                .department(user.getDepartment())
+                .managerName(managerName)
+                .build();
     }
 }

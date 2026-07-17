@@ -55,6 +55,9 @@ public class GoogleAuthService {
     private JwtService jwtService;
 
     @Autowired
+    private UserService userService;
+
+    @Autowired
     private org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder passwordEncoder;
 
     public AuthResponse authenticateWithGoogle(GoogleAuthRequest request) {
@@ -115,13 +118,7 @@ public class GoogleAuthService {
         // ── 3. Generate Convexa JWT ───────────────────────────────────────────
         String token = jwtService.generateToken(user.getEmail());
 
-        return AuthResponse.builder()
-                .token(token)
-                .id(user.getId())
-                .name(user.getName())
-                .email(user.getEmail())
-                .role(user.getRole().name())
-                .build();
+        return userService.buildAuthResponse(user, token, "Google auth successful");
     }
 
     // ── Token verifier ────────────────────────────────────────────────────────

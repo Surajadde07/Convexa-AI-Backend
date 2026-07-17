@@ -58,5 +58,10 @@ public class CompanyStatsResponse {
         private String employeeName;
         private double avgScore;
         private int callCount;
+        // The weakest of the four real QA dimensions (Communication /
+        // Problem Resolution / Professionalism / Cust. Satisfaction),
+        // reused directly from DashboardService.getStats() for this
+        // employee — not a fabricated category.
+        private String primaryWeakness;
     }
 }

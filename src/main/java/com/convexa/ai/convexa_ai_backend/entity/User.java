@@ -33,6 +33,12 @@ public class User {
     @Enumerated(EnumType.STRING)
     private Role role;
 
+    @ManyToOne(fetch = FetchType.EAGER)
+    @JoinColumn(name = "company_id")
+    private Company company;
+
+    private String department;
+
     // "LOCAL" (email/password signup) or "GOOGLE" (OAuth signup). Set at
     // creation in UserService.register() / GoogleAuthService, defaulted
     // here the same way `role` already is, for any row created without it

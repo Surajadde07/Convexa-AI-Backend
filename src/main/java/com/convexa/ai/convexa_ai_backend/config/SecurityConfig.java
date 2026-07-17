@@ -52,6 +52,10 @@ public class SecurityConfig {
                         ).permitAll()
 
                         .requestMatchers(
+                                "/api/invitations/**"
+                        ).permitAll()
+
+                        .requestMatchers(
                                 "/audio/**"
                         ).permitAll()
 

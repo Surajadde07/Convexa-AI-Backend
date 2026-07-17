@@ -23,8 +23,10 @@ public final class CallRangeFilter {
         int days = switch (range.toLowerCase()) {
             case "7d" -> 7;
             case "30d" -> 30;
+            case "90d" -> 90;
             default -> -1; // unrecognized value → no filtering, same as "all"
         };
+
 
         if (days <= 0) {
             return calls;

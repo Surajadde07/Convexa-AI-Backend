@@ -41,4 +41,8 @@ public class CallRecordService {
                 userId
         );
     }
+
+    public List<CallRecord> getCallsByCompanyId(Long companyId) {
+        return callRecordRepository.findByUserCompanyId(companyId);
+    }
 }
