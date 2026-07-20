@@ -36,6 +36,45 @@ public class CloudinaryService {
     // ─────────────────────────────────────────────────────────────────────────
 
     /**
+     * Uploads an image MultipartFile to Cloudinary for company logos.
+     *
+     * @param  file  the image file received from the HTTP multipart request
+     * @return       {@link CloudinaryUploadResult} containing the secure HTTPS URL and the public_id
+     * @throws CloudinaryUploadException if the upload fails for any reason
+     */
+    public CloudinaryUploadResult uploadImage(MultipartFile file) {
+        try {
+            @SuppressWarnings("unchecked")
+            Map<String, Object> uploadResult = cloudinary.uploader().upload(
+                    file.getBytes(),
+                    ObjectUtils.asMap(
+                            "resource_type", "image",
+                            "folder",        "convexa-ai-logos",
+                            "public_id",     buildPublicId(file.getOriginalFilename()),
+                            "overwrite",     true,
+                            "secure",        true
+                    )
+            );
+
+            String secureUrl = (String) uploadResult.get("secure_url");
+            String publicId  = (String) uploadResult.get("public_id");
+
+            if (secureUrl == null || secureUrl.isBlank()) {
+                throw new CloudinaryUploadException("Cloudinary returned an empty URL");
+            }
+
+            return new CloudinaryUploadResult(secureUrl, publicId);
+
+        } catch (IOException e) {
+            throw new CloudinaryUploadException(
+                    "Failed to read image file bytes: " + e.getMessage(), e);
+        } catch (Exception e) {
+            throw new CloudinaryUploadException(
+                    "Cloudinary image upload failed: " + e.getMessage(), e);
+        }
+    }
+
+    /**
      * Uploads an audio MultipartFile to Cloudinary.
      *
      * @param  file  the audio file received from the HTTP multipart request

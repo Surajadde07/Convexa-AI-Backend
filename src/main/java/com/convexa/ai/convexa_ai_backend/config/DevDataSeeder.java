@@ -3,8 +3,14 @@ package com.convexa.ai.convexa_ai_backend.config;
 import com.convexa.ai.convexa_ai_backend.entity.CallRecord;
 import com.convexa.ai.convexa_ai_backend.entity.Role;
 import com.convexa.ai.convexa_ai_backend.entity.User;
+import com.convexa.ai.convexa_ai_backend.entity.Company;
+import com.convexa.ai.convexa_ai_backend.entity.Subscription;
+import com.convexa.ai.convexa_ai_backend.entity.SubscriptionPlan;
+import com.convexa.ai.convexa_ai_backend.entity.SubscriptionStatus;
 import com.convexa.ai.convexa_ai_backend.repository.CallRecordRepository;
 import com.convexa.ai.convexa_ai_backend.repository.UserRepository;
+import com.convexa.ai.convexa_ai_backend.repository.CompanyRepository;
+import com.convexa.ai.convexa_ai_backend.repository.SubscriptionRepository;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -56,6 +62,12 @@ public class DevDataSeeder implements CommandLineRunner {
 
     @Autowired
     private CallRecordRepository callRecordRepository;
+
+    @Autowired
+    private CompanyRepository companyRepository;
+
+    @Autowired
+    private SubscriptionRepository subscriptionRepository;
 
     @Autowired
     private PasswordEncoder passwordEncoder;
@@ -122,14 +134,46 @@ public class DevDataSeeder implements CommandLineRunner {
         log.info("[DevDataSeeder] Done — seeded {} employees and {} call records.", employees.size(), totalCalls);
     }
 
-    // ── Employees: 1 ADMIN, 2 MANAGER, rest USER (10 total, within the 8-12 range) ──
+    // ── Employees: 1 OWNER, 2 MANAGER, rest USER (10 total, within the 8-12 range) ──
     private List<User> createEmployees() {
+        // 1. Create a Seed Company
+        Company company = Company.builder()
+                .companyName("Convexa Demo Org")
+                .companySlug("convexa-demo")
+                .industry("Technology")
+                .website("https://convexa.ai")
+                .companySize("50-200")
+                .timezone("America/New_York")
+                .status("ACTIVE")
+                .onboardingCompleted(true)
+                .profileCompletionPercentage(100)
+                .build();
+        Company savedCompany = companyRepository.save(company);
+
+        // 2. Create Trial Subscription (Business, 25 seat limit, status TRIALING)
+        LocalDateTime now = LocalDateTime.now();
+        Subscription sub = Subscription.builder()
+                .company(savedCompany)
+                .plan(SubscriptionPlan.BUSINESS)
+                .status(SubscriptionStatus.TRIALING)
+                .trialStart(now.minusDays(2))
+                .trialEnd(now.plusDays(12))
+                .currentPeriodStart(now.minusDays(2))
+                .currentPeriodEnd(now.plusDays(12))
+                .seatLimit(25)
+                .currentSeatCount(10)
+                .trialReminderSent(false)
+                .trialExpiredReminderSent(false)
+                .build();
+        subscriptionRepository.save(sub);
+        savedCompany.setSubscription(sub);
+
         int employeeCount = 10;
         List<User> employees = new ArrayList<>();
         String encodedPassword = passwordEncoder.encode(SEED_PASSWORD);
 
         for (int i = 0; i < employeeCount; i++) {
-            Role role = i == 0 ? Role.ADMIN : (i == 1 || i == 2) ? Role.MANAGER : Role.USER;
+            Role role = i == 0 ? Role.OWNER : (i == 1 || i == 2) ? Role.MANAGER : Role.USER;
             String first = FIRST_NAMES[i % FIRST_NAMES.length];
             String last = LAST_NAMES[i % LAST_NAMES.length];
             String name = first + " " + last;
@@ -140,6 +184,7 @@ public class DevDataSeeder implements CommandLineRunner {
                     .email(email)
                     .password(encodedPassword)
                     .role(role)
+                    .company(savedCompany)
                     .provider("LOCAL")
                     .build();
 

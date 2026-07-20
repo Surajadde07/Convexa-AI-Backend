@@ -69,7 +69,7 @@ public class SecurityConfig {
                         // AccessDeniedHandler required.
                         .requestMatchers(
                                 "/api/company/**"
-                        ).hasAnyRole("MANAGER", "ADMIN")
+                        ).hasAnyRole("OWNER", "MANAGER", "ADMIN")
 
                         .anyRequest()
                         .authenticated()

@@ -5,8 +5,16 @@ import com.convexa.ai.convexa_ai_backend.entity.*;
 import com.convexa.ai.convexa_ai_backend.repository.*;
 import com.convexa.ai.convexa_ai_backend.service.CompanyService;
 import com.convexa.ai.convexa_ai_backend.service.InvitationService;
+import com.convexa.ai.convexa_ai_backend.service.UserService;
+import com.convexa.ai.convexa_ai_backend.service.SubscriptionService;
+import com.convexa.ai.convexa_ai_backend.service.CloudinaryService;
+import com.convexa.ai.convexa_ai_backend.service.CloudinaryService.CloudinaryUploadResult;
+import com.convexa.ai.convexa_ai_backend.exception.SeatLimitExceededException;
+import com.convexa.ai.convexa_ai_backend.exception.DuplicatePendingInvitationException;
 import jakarta.servlet.http.HttpServletRequest;
+import jakarta.validation.Valid;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
@@ -36,6 +44,15 @@ public class CompanyController {
 
     @Autowired
     private InvitationService invitationService;
+
+    @Autowired
+    private UserService userService;
+
+    @Autowired
+    private SubscriptionService subscriptionService;
+
+    @Autowired
+    private CloudinaryService cloudinaryService;
 
     @Autowired
     private CoachingSessionRepository coachingSessionRepository;
@@ -132,8 +149,9 @@ public class CompanyController {
         User user = userRepository.findByEmail(email)
                 .orElseThrow(() -> new RuntimeException("User not found"));
 
-        if (user.getRole() != Role.MANAGER && user.getRole() != Role.ADMIN) {
-            return ResponseEntity.status(403).body(Map.of("error", "Only managers and admins can update company profiles."));
+        // Only OWNER and ADMIN are allowed to edit Company Settings/Branding
+        if (user.getRole() != Role.OWNER && user.getRole() != Role.ADMIN) {
+            return ResponseEntity.status(403).body(Map.of("error", "Only owners and admins can update company settings."));
         }
 
         Company company = user.getCompany();
@@ -142,13 +160,64 @@ public class CompanyController {
         }
 
         if (req.getCompanyName() != null) company.setCompanyName(req.getCompanyName());
-        if (req.getCompanyLogo() != null) company.setCompanyLogo(req.getCompanyLogo());
+        if (req.getCompanyLogo() != null) {
+            // Clean up logo value: store as null if blank (remove logo)
+            company.setCompanyLogo(req.getCompanyLogo().isBlank() ? null : req.getCompanyLogo());
+        }
         if (req.getIndustry() != null) company.setIndustry(req.getIndustry());
         if (req.getCompanySize() != null) company.setCompanySize(req.getCompanySize());
         if (req.getWebsite() != null) company.setWebsite(req.getWebsite());
 
         companyRepository.save(company);
         return ResponseEntity.ok(company);
+    }
+
+    @PostMapping("/logo")
+    public ResponseEntity<?> uploadLogo(
+            @RequestParam("logo") org.springframework.web.multipart.MultipartFile file,
+            HttpServletRequest request
+    ) {
+        String email = (String) request.getAttribute("userEmail");
+        User user = userRepository.findByEmail(email)
+                .orElseThrow(() -> new RuntimeException("User not found"));
+
+        // Only OWNER and ADMIN are allowed to edit Company Settings/Branding
+        if (user.getRole() != Role.OWNER && user.getRole() != Role.ADMIN) {
+            return ResponseEntity.status(403).body(Map.of("error", "Only owners and admins can upload the company logo."));
+        }
+
+        Company company = user.getCompany();
+        if (company == null) {
+            return ResponseEntity.notFound().build();
+        }
+
+        // 1. Validate file type: PNG, JPG, JPEG, WEBP
+        String contentType = file.getContentType();
+        if (contentType == null || 
+            (!contentType.equalsIgnoreCase("image/png") && 
+             !contentType.equalsIgnoreCase("image/jpeg") && 
+             !contentType.equalsIgnoreCase("image/jpg") && 
+             !contentType.equalsIgnoreCase("image/webp"))) {
+            return ResponseEntity.badRequest().body(Map.of("error", "Invalid file type. Only PNG, JPG, JPEG, and WEBP are allowed."));
+        }
+
+        // 2. Validate file size: Maximum 5 MB (5 * 1024 * 1024 bytes)
+        if (file.getSize() > 5 * 1024 * 1024) {
+            return ResponseEntity.badRequest().body(Map.of("error", "File size exceeds the maximum limit of 5 MB."));
+        }
+
+        try {
+            // 3. Upload directly to Cloudinary using CloudinaryService
+            CloudinaryUploadResult uploadResult = cloudinaryService.uploadImage(file);
+
+            // 4. Store secure_url inside companyLogo field
+            company.setCompanyLogo(uploadResult.secureUrl());
+            companyRepository.save(company);
+
+            return ResponseEntity.ok(company);
+        } catch (Exception e) {
+            return ResponseEntity.status(500).body(Map.of("error", "Logo upload failed: " + e.getMessage()));
+        }
     }
 
     @PostMapping("/employee/{id}/coaching")
@@ -270,7 +339,7 @@ public class CompanyController {
 
     @PostMapping("/invitations")
     public ResponseEntity<?> createInvitation(
-            @RequestBody InvitationRequest req,
+            @Valid @RequestBody InvitationRequest req,
             HttpServletRequest request
     ) {
         String managerEmail = (String) request.getAttribute("userEmail");
@@ -295,7 +364,7 @@ public class CompanyController {
             return ResponseEntity.ok(List.of());
         }
 
-        return ResponseEntity.ok(invitationService.getInvitations(manager.getCompany().getId()));
+        return ResponseEntity.ok(invitationService.getInvitations(manager));
     }
 
     @DeleteMapping("/invitations/{id}")
@@ -309,5 +378,101 @@ public class CompanyController {
         
         invitationService.cancelInvitation(manager, id);
         return ResponseEntity.ok(Map.of("message", "Invitation cancelled successfully"));
+    }
+
+    @GetMapping("/members")
+    public ResponseEntity<PagedMembersResponse> getMembers(
+            @RequestParam(value = "page", defaultValue = "0") int page,
+            @RequestParam(value = "size", defaultValue = "20") int size,
+            @RequestParam(value = "search", defaultValue = "") String search,
+            @RequestParam(value = "role", defaultValue = "") String role,
+            @RequestParam(value = "sort", defaultValue = "createdAt,desc") String sort,
+            HttpServletRequest request
+    ) {
+        String email = (String) request.getAttribute("userEmail");
+        User actor = userRepository.findByEmail(email)
+                .orElseThrow(() -> new RuntimeException("Actor not found"));
+
+        if (actor.getCompany() == null) {
+            return ResponseEntity.badRequest().build();
+        }
+
+        // Auto-sync seat count to match actual DB membership before returning members list.
+        // This self-corrects any stale values left by historical bugs.
+        subscriptionService.syncSeatCount(actor.getCompany().getId());
+
+        PagedMembersResponse response = userService.getMembers(actor.getCompany().getId(), page, size, search, role, sort);
+        return ResponseEntity.ok(response);
+    }
+
+    @PostMapping("/sync-seats")
+    public ResponseEntity<?> syncSeats(HttpServletRequest request) {
+        String email = (String) request.getAttribute("userEmail");
+        User actor = userRepository.findByEmail(email)
+                .orElseThrow(() -> new RuntimeException("Actor not found"));
+
+        if (actor.getCompany() == null) {
+            return ResponseEntity.badRequest().body(Map.of("error", "No company association"));
+        }
+
+        int actualCount = subscriptionService.syncSeatCount(actor.getCompany().getId());
+        return ResponseEntity.ok(Map.of("message", "Seat count synchronized", "currentSeatCount", actualCount));
+    }
+
+    @PostMapping("/invitations/{id}/resend")
+    public ResponseEntity<?> resendInvitation(
+            @PathVariable Long id,
+            HttpServletRequest request
+    ) {
+        String email = (String) request.getAttribute("userEmail");
+        User actor = userRepository.findByEmail(email)
+                .orElseThrow(() -> new RuntimeException("Actor not found"));
+
+        InvitationResponse response = invitationService.resendInvitation(actor, id);
+        return ResponseEntity.ok(response);
+    }
+
+    @PatchMapping("/members/{id}/role")
+    public ResponseEntity<?> updateMemberRole(
+            @PathVariable Long id,
+            @RequestBody RoleUpdateRequest req,
+            HttpServletRequest request
+    ) {
+        String email = (String) request.getAttribute("userEmail");
+        User actor = userRepository.findByEmail(email)
+                .orElseThrow(() -> new RuntimeException("Actor not found"));
+
+        Role newRole;
+        try {
+            newRole = Role.valueOf(req.getRole().toUpperCase());
+        } catch (Exception e) {
+            return ResponseEntity.badRequest().body(Map.of("error", "Invalid role specified"));
+        }
+
+        userService.updateMemberRole(actor, id, newRole);
+        return ResponseEntity.ok(Map.of("message", "Member role updated successfully"));
+    }
+
+    @DeleteMapping("/members/{id}")
+    public ResponseEntity<?> removeMember(
+            @PathVariable Long id,
+            HttpServletRequest request
+    ) {
+        String email = (String) request.getAttribute("userEmail");
+        User actor = userRepository.findByEmail(email)
+                .orElseThrow(() -> new RuntimeException("Actor not found"));
+
+        userService.removeMember(actor, id);
+        return ResponseEntity.ok(Map.of("message", "Member removed successfully"));
+    }
+
+    @ExceptionHandler(SeatLimitExceededException.class)
+    public ResponseEntity<Map<String, String>> handleSeatLimitExceeded(SeatLimitExceededException ex) {
+        return ResponseEntity.status(HttpStatus.CONFLICT).body(Map.of("error", ex.getMessage()));
+    }
+
+    @ExceptionHandler(DuplicatePendingInvitationException.class)
+    public ResponseEntity<Map<String, String>> handleDuplicatePendingInvitation(DuplicatePendingInvitationException ex) {
+        return ResponseEntity.status(HttpStatus.CONFLICT).body(Map.of("error", ex.getMessage()));
     }
 }

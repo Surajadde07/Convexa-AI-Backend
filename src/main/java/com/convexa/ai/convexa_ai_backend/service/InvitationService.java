@@ -16,6 +16,9 @@ import java.util.Optional;
 import java.util.UUID;
 import java.util.stream.Collectors;
 
+import com.convexa.ai.convexa_ai_backend.exception.DuplicatePendingInvitationException;
+import org.springframework.transaction.annotation.Transactional;
+
 @Service
 public class InvitationService {
 
@@ -31,16 +34,35 @@ public class InvitationService {
     @Autowired
     private BCryptPasswordEncoder passwordEncoder;
 
+    @Autowired
+    private SubscriptionService subscriptionService;
+
     public InvitationResponse createInvitation(User manager, InvitationRequest req) {
 
-        // Cancel previous pending invitations to same email in this company
+        // Check if user already belongs to this company (active member check)
+        Optional<User> existingUser = userRepository.findByEmail(req.getEmail());
+        if (existingUser.isPresent()) {
+            User existingMember = existingUser.get();
+            if (existingMember.getCompany() != null && existingMember.getCompany().getId().equals(manager.getCompany().getId())) {
+                throw new DuplicatePendingInvitationException("This user is already an active member of your workspace.");
+            }
+        }
+
+        // Proactive seat limit check — must happen BEFORE creating the invitation record
+        // or sending any email. If the workspace is full, only the OWNER/ADMIN sees this
+        // error. The employee should never receive an invitation they cannot accept.
+        subscriptionService.checkSeatAvailability(manager.getCompany().getId());
         Optional<Invitation> existingOpt = invitationRepository.findByEmailAndCompanyId(req.getEmail(), manager.getCompany().getId());
-        existingOpt.ifPresent(existing -> {
+        if (existingOpt.isPresent()) {
+            Invitation existing = existingOpt.get();
+            if (existing.getStatus() == InvitationStatus.PENDING && existing.getExpiresAt().isAfter(LocalDateTime.now())) {
+                throw new DuplicatePendingInvitationException("Invitation already pending for this email. Use resend to refresh the invitation link.");
+            }
             if (existing.getStatus() == InvitationStatus.PENDING) {
                 existing.setStatus(InvitationStatus.CANCELLED);
                 invitationRepository.save(existing);
             }
-        });
+        }
 
         Role targetRole;
         try {
@@ -76,10 +98,19 @@ public class InvitationService {
         return mapToResponse(invite);
     }
 
-    public List<InvitationResponse> getInvitations(Long companyId) {
-        List<Invitation> list = invitationRepository.findByCompanyIdOrderByCreatedAtDesc(companyId);
+    public List<InvitationResponse> getInvitations(User actor) {
+        Long companyId = actor.getCompany().getId();
+        List<Invitation> list;
+
+        // OWNER sees all company invitations for full workspace oversight.
+        // ADMIN and MANAGER see only invitations they personally created.
+        if (actor.getRole() == Role.OWNER) {
+            list = invitationRepository.findByCompanyIdOrderByCreatedAtDesc(companyId);
+        } else {
+            list = invitationRepository.findByCompanyIdAndInvitedByIdOrderByCreatedAtDesc(companyId, actor.getId());
+        }
+
         LocalDateTime now = LocalDateTime.now();
-        
         for (Invitation invite : list) {
             if (invite.getStatus() == InvitationStatus.PENDING && invite.getExpiresAt().isBefore(now)) {
                 invite.setStatus(InvitationStatus.EXPIRED);
@@ -118,6 +149,7 @@ public class InvitationService {
         return mapToResponse(invite);
     }
 
+    @Transactional
     public void acceptInvitation(AcceptInvitationRequest req) {
         Invitation invite = invitationRepository.findByToken(req.getToken())
                 .orElseThrow(() -> new RuntimeException("Invalid invitation token"));
@@ -134,6 +166,12 @@ public class InvitationService {
         Optional<User> existingUserOpt = userRepository.findByEmail(invite.getEmail());
         if (existingUserOpt.isPresent()) {
             User user = existingUserOpt.get();
+            // Idempotency: if already a member of this exact workspace, just mark accepted
+            if (user.getCompany() != null && user.getCompany().getId().equals(invite.getCompany().getId())) {
+                invite.setStatus(InvitationStatus.ACCEPTED);
+                invitationRepository.save(invite);
+                return;
+            }
             user.setCompany(invite.getCompany());
             user.setRole(invite.getRole());
             user.setDepartment(invite.getDepartment());
@@ -157,6 +195,43 @@ public class InvitationService {
 
         invite.setStatus(InvitationStatus.ACCEPTED);
         invitationRepository.save(invite);
+
+        // Synchronize active subscription seat counts
+        subscriptionService.incrementSeatCount(invite.getCompany().getId());
+    }
+
+    @Transactional
+    public InvitationResponse resendInvitation(User actor, Long invitationId) {
+        Invitation invite = invitationRepository.findById(invitationId)
+                .orElseThrow(() -> new RuntimeException("Invitation not found"));
+
+        if (!invite.getCompany().getId().equals(actor.getCompany().getId())) {
+            throw new RuntimeException("Unauthorized: Invitation belongs to a different company");
+        }
+
+        if (invite.getStatus() != InvitationStatus.PENDING && invite.getStatus() != InvitationStatus.EXPIRED) {
+            throw new RuntimeException("Only pending or expired invitations can be re-sent");
+        }
+
+        String newToken = UUID.randomUUID().toString();
+        invite.setToken(newToken);
+        invite.setStatus(InvitationStatus.PENDING);
+        invite.setExpiresAt(LocalDateTime.now().plusDays(2));
+        invite.setCreatedAt(LocalDateTime.now());
+        invitationRepository.save(invite);
+
+        emailService.sendInvitationEmail(
+                invite.getEmail(),
+                actor.getCompany().getCompanyName(),
+                actor.getCompany().getCompanyLogo(),
+                invite.getRole().name(),
+                invite.getDepartment(),
+                actor.getName() != null && !actor.getName().isBlank() ? actor.getName() : actor.getEmail(),
+                invite.getToken(),
+                invite.getExpiresAt().toString()
+        );
+
+        return mapToResponse(invite);
     }
 
     private InvitationResponse mapToResponse(Invitation invite) {

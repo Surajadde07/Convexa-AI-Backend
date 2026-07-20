@@ -15,4 +15,6 @@ public interface UserRepository
     boolean existsByEmail(String email);
 
     java.util.List<User> findByCompanyId(Long companyId);
+
+    long countByCompanyId(Long companyId);
 }
