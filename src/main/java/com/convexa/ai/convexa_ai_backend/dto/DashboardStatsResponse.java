@@ -59,6 +59,8 @@ public class DashboardStatsResponse {
     // One-line natural-language summary for the "briefing" card.
     private String briefing;
 
+    private java.util.Map<String, Long> outcomeDistribution;
+
     @Data
     @Builder
     public static class NeedsAttentionItem {

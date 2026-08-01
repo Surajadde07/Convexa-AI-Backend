@@ -116,7 +116,7 @@ public class GoogleAuthService {
         }
 
         // ── 3. Generate Convexa JWT ───────────────────────────────────────────
-        String token = jwtService.generateToken(user.getEmail());
+        String token = jwtService.generateToken(user.getEmail(), user.getId());
 
         return userService.buildAuthResponse(user, token, "Google auth successful");
     }

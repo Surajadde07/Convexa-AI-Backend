@@ -6,18 +6,16 @@ import com.convexa.ai.convexa_ai_backend.entity.User;
 import com.convexa.ai.convexa_ai_backend.repository.UserRepository;
 import com.convexa.ai.convexa_ai_backend.service.AccountService;
 import com.convexa.ai.convexa_ai_backend.service.JwtService;
-import jakarta.servlet.http.HttpServletRequest;
+import com.convexa.ai.convexa_ai_backend.security.WorkspacePrincipal;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.Map;
 
 /**
  * Profile, Security, and Danger Zone from the Settings page.
- * Same JWT-attribute auth pattern as every other controller in this app —
- * every operation is scoped to request.getAttribute("userEmail"), so one
- * account can never read or modify another's data.
  */
 @RestController
 @CrossOrigin("*")
@@ -32,15 +30,17 @@ public class AccountController {
     @Autowired
     private JwtService jwtService;
 
-    private User currentUser(HttpServletRequest request) {
-        String email = (String) request.getAttribute("userEmail");
-        return userRepository.findByEmail(email)
+    private User currentUser(WorkspacePrincipal principal) {
+        if (principal == null) {
+            throw new RuntimeException("Unauthorized");
+        }
+        return userRepository.findById(principal.getUserId())
                 .orElseThrow(() -> new RuntimeException("User not found"));
     }
 
     @GetMapping("/api/users/me")
-    public ResponseEntity<?> getProfile(HttpServletRequest request) {
-        User user = currentUser(request);
+    public ResponseEntity<?> getProfile(@AuthenticationPrincipal WorkspacePrincipal principal) {
+        User user = currentUser(principal);
         return ResponseEntity.ok(Map.of(
                 "name", user.getName(),
                 "email", user.getEmail(),
@@ -49,15 +49,14 @@ public class AccountController {
     }
 
     @PatchMapping("/api/users/me")
-    public ResponseEntity<?> updateProfile(@RequestBody UpdateProfileRequest req, HttpServletRequest request) {
+    public ResponseEntity<?> updateProfile(
+            @RequestBody UpdateProfileRequest req,
+            @AuthenticationPrincipal WorkspacePrincipal principal
+    ) {
         try {
-            User updated = accountService.updateProfile(currentUser(request), req);
-            // Root cause of "works once, then fails": the JWT's subject is the
-            // email. If email just changed, the old token now points at an
-            // email that no longer exists, and every subsequent request's
-            // currentUser() lookup fails. Reissuing here keeps the token in
-            // sync with the DB on every save, not just ones that change email.
-            String refreshedToken = jwtService.generateToken(updated.getEmail());
+            User current = currentUser(principal);
+            User updated = accountService.updateProfile(current, req);
+            String refreshedToken = jwtService.generateToken(updated.getEmail(), updated.getId());
             return ResponseEntity.ok(Map.of(
                     "name", updated.getName(),
                     "email", updated.getEmail(),
@@ -69,9 +68,12 @@ public class AccountController {
     }
 
     @PostMapping("/api/account/change-password")
-    public ResponseEntity<?> changePassword(@RequestBody ChangePasswordRequest req, HttpServletRequest request) {
+    public ResponseEntity<?> changePassword(
+            @RequestBody ChangePasswordRequest req,
+            @AuthenticationPrincipal WorkspacePrincipal principal
+    ) {
         try {
-            accountService.changePassword(currentUser(request), req);
+            accountService.changePassword(currentUser(principal), req);
             return ResponseEntity.ok(Map.of("message", "Password changed successfully."));
         } catch (IllegalArgumentException e) {
             return ResponseEntity.badRequest().body(Map.of("message", e.getMessage()));
@@ -79,13 +81,13 @@ public class AccountController {
     }
 
     @DeleteMapping("/api/account")
-    public ResponseEntity<?> deleteAccount(HttpServletRequest request) {
-        accountService.deleteAccount(currentUser(request));
+    public ResponseEntity<?> deleteAccount(@AuthenticationPrincipal WorkspacePrincipal principal) {
+        accountService.deleteAccount(currentUser(principal));
         return ResponseEntity.ok(Map.of("message", "Account deleted."));
     }
 
     @GetMapping("/api/users/me/export")
-    public ResponseEntity<?> exportAccountData(HttpServletRequest request) {
-        return ResponseEntity.ok(accountService.exportAccountData(currentUser(request)));
+    public ResponseEntity<?> exportAccountData(@AuthenticationPrincipal WorkspacePrincipal principal) {
+        return ResponseEntity.ok(accountService.exportAccountData(currentUser(principal)));
     }
 }

@@ -9,11 +9,14 @@ import com.convexa.ai.convexa_ai_backend.dto.EmployeeProfileResponse;
 import com.convexa.ai.convexa_ai_backend.dto.EmployeeProfileResponse.*;
 import com.convexa.ai.convexa_ai_backend.entity.CallRecord;
 import com.convexa.ai.convexa_ai_backend.entity.User;
+import com.convexa.ai.convexa_ai_backend.entity.MembershipStatus;
+import com.convexa.ai.convexa_ai_backend.entity.OrganizationMembership;
 import com.convexa.ai.convexa_ai_backend.entity.CoachingSession;
 import com.convexa.ai.convexa_ai_backend.entity.LearningAssignment;
 import com.convexa.ai.convexa_ai_backend.entity.ManagerNote;
 import com.convexa.ai.convexa_ai_backend.entity.ImprovementPlan;
 import com.convexa.ai.convexa_ai_backend.repository.UserRepository;
+import com.convexa.ai.convexa_ai_backend.repository.OrganizationMembershipRepository;
 import com.convexa.ai.convexa_ai_backend.repository.CoachingSessionRepository;
 import com.convexa.ai.convexa_ai_backend.repository.LearningAssignmentRepository;
 import com.convexa.ai.convexa_ai_backend.repository.ManagerNoteRepository;
@@ -38,6 +41,9 @@ public class CompanyService {
 
     @Autowired
     private UserRepository userRepository;
+
+    @Autowired
+    private OrganizationMembershipRepository organizationMembershipRepository;
 
     @Autowired
     private DashboardService dashboardService;
@@ -98,9 +104,13 @@ public class CompanyService {
                         .employeeName(e.getEmployeeName())
                         .avgScore(e.getAvgScore())
                         .callCount(e.getCallCount())
-                        .primaryWeakness(primaryWeaknessFor(e.getEmployeeId(), range))
+                        .primaryWeakness(primaryWeaknessFor(companyId, e.getEmployeeId(), range))
                         .build())
-                .toList();
+                .collect(Collectors.toList());
+
+        Map<String, Long> outcomeDist = allCalls.stream()
+                .filter(c -> c.getOutcomeStatus() != null && !c.getOutcomeStatus().isBlank())
+                .collect(Collectors.groupingBy(CallRecord::getOutcomeStatus, Collectors.counting()));
 
         return CompanyStatsResponse.builder()
                 .totalCalls(totalCalls)
@@ -112,6 +122,7 @@ public class CompanyService {
                 .callVolume(callVolume)
                 .topPerformers(topPerformers)
                 .needsCoaching(needsCoaching)
+                .outcomeDistribution(outcomeDist)
                 .build();
     }
 
@@ -122,8 +133,12 @@ public class CompanyService {
 
         if (byEmployee.isEmpty()) return List.of();
 
-        Map<Long, String> namesById = userRepository.findByCompanyId(companyId).stream()
-                .collect(Collectors.toMap(User::getId, u -> u.getName() != null && !u.getName().isBlank() ? u.getName() : u.getEmail()));
+        Map<Long, String> namesById = organizationMembershipRepository.findByCompanyIdAndStatus(companyId, MembershipStatus.ACTIVE).stream()
+                .collect(Collectors.toMap(
+                    m -> m.getUser().getId(),
+                    m -> m.getUser().getName() != null && !m.getUser().getName().isBlank() ? m.getUser().getName() : m.getUser().getEmail(),
+                    (existing, replacement) -> existing
+                ));
 
         return byEmployee.entrySet().stream()
                 .filter(entry -> namesById.containsKey(entry.getKey()))
@@ -186,8 +201,8 @@ public class CompanyService {
                 .toList();
     }
 
-    private String primaryWeaknessFor(Long employeeId, String range) {
-        DashboardStatsResponse stats = dashboardService.getStats(employeeId, range);
+    private String primaryWeaknessFor(Long companyId, Long employeeId, String range) {
+        DashboardStatsResponse stats = dashboardService.getStats(companyId, employeeId, range);
         return stats.getWeakestDimensionLabel();
     }
 
@@ -195,14 +210,14 @@ public class CompanyService {
         User employee = userRepository.findById(employeeId)
                 .orElseThrow(() -> new RuntimeException("Employee not found"));
 
-        if (employee.getCompany() == null || !employee.getCompany().getId().equals(companyId)) {
+        if (!organizationMembershipRepository.existsByUserIdAndCompanyId(employeeId, companyId)) {
             throw new RuntimeException("Unauthorized: Employee belongs to a different company.");
         }
 
-        DashboardStatsResponse dashboard = dashboardService.getStats(employeeId, range);
-        AnalyticsResponse analytics = analyticsService.getAnalytics(employeeId, range);
+        DashboardStatsResponse dashboard = dashboardService.getStats(companyId, employeeId, range);
+        AnalyticsResponse analytics = analyticsService.getAnalytics(companyId, employeeId, range);
 
-        List<CallRecord> allCalls = callRecordService.getCallsByUserId(employeeId);
+        List<CallRecord> allCalls = callRecordService.getCallsByUserIdAndCompanyId(employeeId, companyId);
         List<CallRecord> recentCallsSource = allCalls.stream()
                 .sorted(Comparator.comparing(CallRecord::getCreatedAt, Comparator.nullsLast(Comparator.reverseOrder())))
                 .limit(10)
@@ -330,7 +345,7 @@ public class CompanyService {
                         .build()));
 
         // Construct Team / Company Comparison Data
-        List<TeamComparisonData> teamComparison = buildTeamComparison(employeeId, range, dashboard, recentCallsSource);
+        List<TeamComparisonData> teamComparison = buildTeamComparison(companyId, employeeId, range, dashboard, recentCallsSource);
 
         // Construct Alerts
         List<String> alerts = deriveAlerts(employee, dashboard, coachSessions, learnAssigns, recentCallsSource, pipPlans);
@@ -407,8 +422,8 @@ public class CompanyService {
         return "Performance exceeds baseline targets. Continue regular check-ins and monthly evaluations.";
     }
 
-    private List<TeamComparisonData> buildTeamComparison(Long employeeId, String range, DashboardStatsResponse dashboard, List<CallRecord> recentCallsSource) {
-        List<CallRecord> allCalls = callRecordService.getAllCallRecords();
+    private List<TeamComparisonData> buildTeamComparison(Long companyId, Long employeeId, String range, DashboardStatsResponse dashboard, List<CallRecord> recentCallsSource) {
+        List<CallRecord> allCalls = callRecordService.getCallsByCompanyId(companyId);
         List<CallRecord> rangeCalls = CallRangeFilter.apply(allCalls, range);
 
         Map<Long, List<CallRecord>> callsByUser = rangeCalls.stream()

@@ -41,14 +41,19 @@ public class AuthController {
     // =========================
 
     @PostMapping("/login")
-    public ResponseEntity<AuthResponse> login(
+    public ResponseEntity<?> login(
             @RequestBody LoginRequest request
     ) {
+        try {
+            AuthResponse response =
+                    userService.login(request);
 
-        AuthResponse response =
-                userService.login(request);
-
-        return ResponseEntity.ok(response);
+            return ResponseEntity.ok(response);
+        } catch (RuntimeException e) {
+            return ResponseEntity
+                    .status(org.springframework.http.HttpStatus.UNAUTHORIZED)
+                    .body(java.util.Map.of("message", e.getMessage()));
+        }
     }
 
     // =========================

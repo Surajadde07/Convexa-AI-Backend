@@ -92,13 +92,15 @@ public class SecurityConfig {
     @Bean
     public CorsConfigurationSource corsConfigurationSource() {
 
-        CorsConfiguration configuration =
-                new CorsConfiguration();
+        CorsConfiguration configuration = new CorsConfiguration();
 
-        configuration.setAllowedOrigins(
+        configuration.setAllowedOriginPatterns(
                 List.of(
-                        "http://localhost:5173",
-                        "https://convexa-ai-frontend.onrender.com"
+                        "http://localhost:*",
+                        "http://127.0.0.1:*",
+                        "https://*.onrender.com",
+                        "https://*.vercel.app",
+                        "*"
                 )
         );
 
@@ -115,6 +117,10 @@ public class SecurityConfig {
 
         configuration.setAllowedHeaders(
                 List.of("*")
+        );
+
+        configuration.setExposedHeaders(
+                List.of("Authorization", "X-Workspace-Id")
         );
 
         configuration.setAllowCredentials(true);

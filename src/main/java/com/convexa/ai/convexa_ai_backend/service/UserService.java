@@ -24,6 +24,9 @@ public class UserService {
     private CompanyRepository companyRepository;
 
     @Autowired
+    private com.convexa.ai.convexa_ai_backend.repository.OrganizationMembershipRepository organizationMembershipRepository;
+
+    @Autowired
     private SubscriptionService subscriptionService;
 
     @Autowired
@@ -54,7 +57,7 @@ public class UserService {
         Company company = Company.builder()
                 .companyName(companyName)
                 .companySlug(companySlug)
-                .status("ACTIVE")
+                .status(CompanyStatus.ACTIVE)
                 .onboardingCompleted(false)
                 .profileCompletionPercentage(0)
                 .build();
@@ -77,7 +80,19 @@ public class UserService {
 
         User savedUser = userRepository.save(user);
 
-        String token = jwtService.generateToken(savedUser.getEmail());
+        // Create organization membership link (OWNER)
+        OrganizationMembership membership = OrganizationMembership.builder()
+                .user(savedUser)
+                .company(savedCompany)
+                .role(Role.OWNER)
+                .status(MembershipStatus.ACTIVE)
+                .joinedAt(LocalDateTime.now())
+                .lastActivatedAt(LocalDateTime.now())
+                .createdBy(savedUser.getId())
+                .build();
+        organizationMembershipRepository.save(membership);
+
+        String token = jwtService.generateToken(savedUser.getEmail(), savedUser.getId());
 
         return buildAuthResponse(savedUser, token, "Registration successful");
     }
@@ -102,20 +117,20 @@ public class UserService {
         // If the account has no company (removed from workspace), return noWorkspace=true.
         // The frontend redirects to /no-workspace — matching Slack/Linear behaviour where
         // the identity exists but workspace access does not.
-        if (user.getCompany() == null) {
-            String noWsToken = jwtService.generateToken(user.getEmail());
+        boolean hasActiveWorkspaces = !organizationMembershipRepository.findActiveCompaniesByUserId(user.getId()).isEmpty();
+        if (!hasActiveWorkspaces) {
+            String noWsToken = jwtService.generateToken(user.getEmail(), user.getId());
             return AuthResponse.builder()
                     .id(user.getId())
                     .name(user.getName())
                     .email(user.getEmail())
-                    .role(user.getRole() != null ? user.getRole().name() : "USER")
                     .token(noWsToken)
                     .message("No workspace associated with this account")
                     .noWorkspace(true)
                     .build();
         }
 
-        String token = jwtService.generateToken(user.getEmail());
+        String token = jwtService.generateToken(user.getEmail(), user.getId());
 
         return buildAuthResponse(user, token, "Login successful");
     }
@@ -159,99 +174,33 @@ public class UserService {
     }
 
     public AuthResponse buildAuthResponse(User user, String token, String message) {
-        String companyName = null;
-        String companySlug = null;
-        String companyLogo = null;
-        String managerName = "System Manager";
-
-        String subscriptionPlan = null;
-        String subscriptionStatus = null;
-        Integer seatLimit = null;
-        Integer currentSeatCount = null;
-        String trialEndsAt = null;
-
-        Boolean onboardingCompleted = null;
-        Integer profileCompletionPercentage = null;
-
-        String brandPrimaryColor = null;
-        String brandSecondaryColor = null;
-
-        if (user.getCompany() != null) {
-            Company company = user.getCompany();
-            companyName = company.getCompanyName();
-            companySlug = company.getCompanySlug();
-            companyLogo = company.getCompanyLogo();
-            onboardingCompleted = company.getOnboardingCompleted();
-            profileCompletionPercentage = company.getProfileCompletionPercentage();
-            brandPrimaryColor = company.getBrandPrimaryColor();
-            brandSecondaryColor = company.getBrandSecondaryColor();
-
-            if (companyLogo == null || companyLogo.isBlank()) {
-                companyLogo = "https://via.placeholder.com/150?text=Convexa+AI";
-            }
-
-            Subscription sub = company.getSubscription();
-            if (sub != null) {
-                subscriptionPlan = sub.getPlan().name();
-                subscriptionStatus = sub.getStatus().name();
-                seatLimit = sub.getSeatLimit();
-                currentSeatCount = sub.getCurrentSeatCount();
-                if (sub.getTrialEnd() != null) {
-                    trialEndsAt = sub.getTrialEnd().toString();
-                }
-            }
-
-            List<User> companyUsers = userRepository.findByCompanyId(company.getId());
-            for (User cu : companyUsers) {
-                if (cu.getRole() == Role.OWNER || cu.getRole() == Role.MANAGER || cu.getRole() == Role.ADMIN) {
-                    managerName = cu.getName() != null && !cu.getName().isBlank() ? cu.getName() : cu.getEmail();
-                    break;
-                }
-            }
-        }
-
         return AuthResponse.builder()
                 .id(user.getId())
                 .name(user.getName())
                 .email(user.getEmail())
-                .role(user.getRole().name())
                 .token(token)
                 .message(message)
-                .companyName(companyName)
-                .companySlug(companySlug)
-                .companyLogo(companyLogo)
-                .department(user.getDepartment())
-                .managerName(managerName)
-                .subscriptionPlan(subscriptionPlan)
-                .subscriptionStatus(subscriptionStatus)
-                .seatLimit(seatLimit)
-                .currentSeatCount(currentSeatCount)
-                .trialEndsAt(trialEndsAt)
-                .onboardingCompleted(onboardingCompleted)
-                .profileCompletionPercentage(profileCompletionPercentage)
-                .brandPrimaryColor(brandPrimaryColor)
-                .brandSecondaryColor(brandSecondaryColor)
+                .noWorkspace(user.getCompany() == null)
                 .build();
     }
 
     @Transactional
-    public void updateMemberRole(User actor, Long memberId, Role newRole) {
-        User target = userRepository.findById(memberId)
-                .orElseThrow(() -> new RuntimeException("Member not found"));
+    public void updateMemberRole(Long companyId, Long actorUserId, Long memberId, Role newRole) {
+        OrganizationMembership actorMembership = organizationMembershipRepository
+                .findByUserIdAndCompanyId(actorUserId, companyId)
+                .orElseThrow(() -> new RuntimeException("Actor membership not found in workspace"));
 
-        if (target.getCompany() == null || !target.getCompany().getId().equals(actor.getCompany().getId())) {
-            throw new RuntimeException("Member does not belong to your company");
+        OrganizationMembership targetMembership = organizationMembershipRepository
+                .findByUserIdAndCompanyId(memberId, companyId)
+                .orElseThrow(() -> new RuntimeException("Member does not belong to your company"));
+
+        Role actorRole = actorMembership.getRole();
+        Role targetRole = targetMembership.getRole();
+
+        if (actorRole == Role.USER || actorRole == Role.MANAGER) {
+            throw new RuntimeException("Unauthorized: USER or MANAGER cannot manage roles");
         }
 
-        Role actorRole = actor.getRole();
-        Role targetRole = target.getRole();
-
-        if (actorRole == Role.USER) {
-            throw new RuntimeException("Unauthorized: USER cannot manage roles");
-        }
-        if (actorRole == Role.MANAGER) {
-            throw new RuntimeException("Unauthorized: MANAGER cannot manage roles");
-        }
         if (actorRole == Role.ADMIN) {
             if (targetRole == Role.OWNER || targetRole == Role.ADMIN) {
                 throw new RuntimeException("Unauthorized: ADMIN cannot modify OWNER or ADMIN roles");
@@ -260,48 +209,75 @@ public class UserService {
                 throw new RuntimeException("Unauthorized: ADMIN cannot promote members to OWNER or ADMIN");
             }
         }
+
         if (actorRole == Role.OWNER) {
-            if (target.getId().equals(actor.getId())) {
+            if (actorUserId.equals(memberId)) {
                 throw new RuntimeException("Unauthorized: OWNER cannot modify their own role (self-demotion blocked)");
+            }
+            if (targetRole == Role.OWNER && newRole != Role.OWNER) {
+                long ownerCount = organizationMembershipRepository.countByCompanyIdAndRoleAndStatus(companyId, Role.OWNER, MembershipStatus.ACTIVE);
+                if (ownerCount <= 1) {
+                    throw new RuntimeException("Cannot demote the sole OWNER of the workspace. Promote another member to OWNER first.");
+                }
             }
         }
 
-        target.setRole(newRole);
-        userRepository.save(target);
+        targetMembership.setRole(newRole);
+        organizationMembershipRepository.save(targetMembership);
+
+        // Keep legacy User.role synchronized if member belongs to actor's company
+        User targetUser = targetMembership.getUser();
+        if (targetUser.getCompany() != null && targetUser.getCompany().getId().equals(companyId)) {
+            targetUser.setRole(newRole);
+            userRepository.save(targetUser);
+        }
     }
 
     @Transactional
-    public void removeMember(User actor, Long memberId) {
-        User target = userRepository.findById(memberId)
-                .orElseThrow(() -> new RuntimeException("Member not found"));
+    public void removeMember(Long companyId, Long actorUserId, Long memberId) {
+        OrganizationMembership actorMembership = organizationMembershipRepository
+                .findByUserIdAndCompanyId(actorUserId, companyId)
+                .orElseThrow(() -> new RuntimeException("Actor membership not found in workspace"));
 
-        if (target.getCompany() == null || !target.getCompany().getId().equals(actor.getCompany().getId())) {
-            throw new RuntimeException("Member does not belong to your company");
-        }
+        OrganizationMembership targetMembership = organizationMembershipRepository
+                .findByUserIdAndCompanyId(memberId, companyId)
+                .orElseThrow(() -> new RuntimeException("Member does not belong to your company"));
 
-        if (target.getRole() == Role.OWNER) {
-            throw new RuntimeException("Cannot remove an OWNER from the workspace");
-        }
-
-        if (target.getId().equals(actor.getId())) {
+        if (actorUserId.equals(memberId)) {
             throw new RuntimeException("Self-removal is not allowed");
         }
 
-        Role actorRole = actor.getRole();
-        Role targetRole = target.getRole();
+        Role actorRole = actorMembership.getRole();
+        Role targetRole = targetMembership.getRole();
 
         if (actorRole == Role.USER || actorRole == Role.MANAGER) {
             throw new RuntimeException("Unauthorized to remove members");
         }
+
         if (actorRole == Role.ADMIN) {
             if (targetRole == Role.OWNER || targetRole == Role.ADMIN) {
                 throw new RuntimeException("Unauthorized: ADMIN cannot remove OWNER or another ADMIN");
             }
         }
 
-        Long companyId = target.getCompany().getId();
-        target.setCompany(null);
-        userRepository.save(target);
+        if (targetRole == Role.OWNER) {
+            long ownerCount = organizationMembershipRepository.countByCompanyIdAndRoleAndStatus(companyId, Role.OWNER, MembershipStatus.ACTIVE);
+            if (ownerCount <= 1) {
+                throw new RuntimeException("Cannot remove the sole OWNER of the workspace. Promote another member to OWNER first.");
+            }
+        }
+
+        targetMembership.setStatus(MembershipStatus.LEFT);
+        targetMembership.setRemovedBy(actorUserId);
+        targetMembership.setRemovedAt(LocalDateTime.now());
+        organizationMembershipRepository.save(targetMembership);
+
+        // Clear legacy users.company_id ONLY if target user's current company_id matches this workspace
+        User targetUser = targetMembership.getUser();
+        if (targetUser.getCompany() != null && targetUser.getCompany().getId().equals(companyId)) {
+            targetUser.setCompany(null);
+            userRepository.save(targetUser);
+        }
 
         subscriptionService.decrementSeatCount(companyId);
     }
@@ -309,28 +285,31 @@ public class UserService {
     public com.convexa.ai.convexa_ai_backend.dto.PagedMembersResponse getMembers(
             Long companyId, int page, int size, String search, String role, String sort) {
         
-        List<User> users = userRepository.findByCompanyId(companyId);
+        List<OrganizationMembership> memberships = organizationMembershipRepository.findByCompanyIdAndStatus(companyId, MembershipStatus.ACTIVE);
 
-        java.util.stream.Stream<User> stream = users.stream();
+        java.util.stream.Stream<OrganizationMembership> stream = memberships.stream();
         if (search != null && !search.trim().isEmpty()) {
             String q = search.trim().toLowerCase();
-            stream = stream.filter(u -> 
-                (u.getName() != null && u.getName().toLowerCase().contains(q)) || 
-                u.getEmail().toLowerCase().contains(q)
-            );
+            stream = stream.filter(m -> {
+                User u = m.getUser();
+                return (u.getName() != null && u.getName().toLowerCase().contains(q)) || 
+                       (u.getEmail() != null && u.getEmail().toLowerCase().contains(q));
+            });
         }
 
         if (role != null && !role.trim().isEmpty() && !"ALL".equalsIgnoreCase(role)) {
-            stream = stream.filter(u -> u.getRole() != null && u.getRole().name().equalsIgnoreCase(role));
+            stream = stream.filter(m -> m.getRole() != null && m.getRole().name().equalsIgnoreCase(role));
         }
 
-        List<User> filtered = stream.collect(java.util.stream.Collectors.toList());
+        List<OrganizationMembership> filtered = stream.collect(java.util.stream.Collectors.toList());
 
         if (sort != null && !sort.trim().isEmpty()) {
             String[] parts = sort.split(",");
             String field = parts[0];
             boolean desc = parts.length > 1 && "desc".equalsIgnoreCase(parts[1]);
-            filtered.sort((u1, u2) -> {
+            filtered.sort((m1, m2) -> {
+                User u1 = m1.getUser();
+                User u2 = m2.getUser();
                 int comp = 0;
                 if ("name".equalsIgnoreCase(field)) {
                     String n1 = u1.getName() != null ? u1.getName() : "";
@@ -339,8 +318,8 @@ public class UserService {
                 } else if ("email".equalsIgnoreCase(field)) {
                     comp = u1.getEmail().compareToIgnoreCase(u2.getEmail());
                 } else {
-                    LocalDateTime t1 = u1.getCreatedAt() != null ? u1.getCreatedAt() : LocalDateTime.MIN;
-                    LocalDateTime t2 = u2.getCreatedAt() != null ? u2.getCreatedAt() : LocalDateTime.MIN;
+                    LocalDateTime t1 = m1.getJoinedAt() != null ? m1.getJoinedAt() : LocalDateTime.MIN;
+                    LocalDateTime t2 = m2.getJoinedAt() != null ? m2.getJoinedAt() : LocalDateTime.MIN;
                     comp = t1.compareTo(t2);
                 }
                 return desc ? -comp : comp;
@@ -354,14 +333,15 @@ public class UserService {
         if (start < totalElements) {
             int end = Math.min(start + size, totalElements);
             for (int i = start; i < end; i++) {
-                User u = filtered.get(i);
+                OrganizationMembership m = filtered.get(i);
+                User u = m.getUser();
                 content.add(com.convexa.ai.convexa_ai_backend.dto.EmployeeResponse.builder()
                     .id(u.getId())
                     .name(u.getName() != null && !u.getName().isBlank() ? u.getName() : u.getEmail())
                     .email(u.getEmail())
-                    .role(u.getRole() != null ? u.getRole().name() : "USER")
-                    .department(u.getDepartment())
-                    .createdAt(u.getCreatedAt())
+                    .role(m.getRole() != null ? m.getRole().name() : "USER")
+                    .department(m.getDepartment() != null ? m.getDepartment() : u.getDepartment())
+                    .createdAt(m.getJoinedAt() != null ? m.getJoinedAt() : u.getCreatedAt())
                     .build());
             }
         }

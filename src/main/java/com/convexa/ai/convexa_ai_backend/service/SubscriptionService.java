@@ -1,9 +1,11 @@
 package com.convexa.ai.convexa_ai_backend.service;
 
 import com.convexa.ai.convexa_ai_backend.entity.Company;
+import com.convexa.ai.convexa_ai_backend.entity.MembershipStatus;
 import com.convexa.ai.convexa_ai_backend.entity.Subscription;
 import com.convexa.ai.convexa_ai_backend.entity.SubscriptionPlan;
 import com.convexa.ai.convexa_ai_backend.entity.SubscriptionStatus;
+import com.convexa.ai.convexa_ai_backend.repository.OrganizationMembershipRepository;
 import com.convexa.ai.convexa_ai_backend.repository.SubscriptionRepository;
 import com.convexa.ai.convexa_ai_backend.repository.UserRepository;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -23,6 +25,9 @@ public class SubscriptionService {
 
     @Autowired
     private UserRepository userRepository;
+
+    @Autowired
+    private OrganizationMembershipRepository organizationMembershipRepository;
 
     @Value("${convexa.subscription.trial-days:14}")
     private int trialDays;
@@ -110,7 +115,7 @@ public class SubscriptionService {
 
     /**
      * Synchronizes currentSeatCount with the actual number of users
-     * currently associated with the company.
+     * currently associated with the company in organization_memberships.
      * Call this to correct stale values left by historical bugs
      * or any operation that bypassed the increment/decrement helpers.
      */
@@ -118,7 +123,7 @@ public class SubscriptionService {
     public int syncSeatCount(Long companyId) {
         Subscription subscription = subscriptionRepository.findByCompanyId(companyId)
                 .orElseThrow(() -> new RuntimeException("Subscription not found for company ID: " + companyId));
-        int actualCount = (int) userRepository.countByCompanyId(companyId);
+        int actualCount = (int) organizationMembershipRepository.countByCompanyIdAndStatus(companyId, MembershipStatus.ACTIVE);
         subscription.setCurrentSeatCount(actualCount);
         subscriptionRepository.save(subscription);
         return actualCount;

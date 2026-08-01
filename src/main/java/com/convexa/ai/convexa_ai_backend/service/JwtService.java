@@ -23,32 +23,38 @@ public class JwtService {
                     )
             );
 
-    public String generateToken(
-            String email
-    ) {
-
+    public String generateToken(String email, Long userId) {
         return Jwts.builder()
                 .subject(email)
+                .claim("userId", userId)
                 .issuedAt(new Date())
-                .expiration(
-                        new Date(
-                                System.currentTimeMillis()
-                                        + 86400000
-                        )
-                )
+                .expiration(new Date(System.currentTimeMillis() + 86400000))
                 .signWith(key)
                 .compact();
     }
 
-    public String extractEmail(
-            String token
-    ) {
-
+    public String extractEmail(String token) {
         return Jwts.parser()
                 .verifyWith(key)
                 .build()
                 .parseSignedClaims(token)
                 .getPayload()
                 .getSubject();
+    }
+
+    public Long extractUserId(String token) {
+        Object val = Jwts.parser()
+                .verifyWith(key)
+                .build()
+                .parseSignedClaims(token)
+                .getPayload()
+                .get("userId");
+        if (val == null) {
+            return null;
+        }
+        if (val instanceof Number) {
+            return ((Number) val).longValue();
+        }
+        return Long.valueOf(val.toString());
     }
 }

@@ -23,10 +23,16 @@ public class CallRecordService {
         return callRecordRepository.findAll();
     }
 
-    // Get Record By ID
+    // Get Record By ID (unscoped)
     public CallRecord getCallRecordById(Long id) {
         return callRecordRepository.findById(id)
                 .orElseThrow(() -> new RuntimeException("Call Record Not Found"));
+    }
+
+    // Get Record By ID and Workspace Company ID
+    public CallRecord getCallRecordByIdAndCompanyId(Long id, Long companyId) {
+        return callRecordRepository.findByIdAndCompanyId(id, companyId)
+                .orElseThrow(() -> new RuntimeException("Call record not found in this workspace"));
     }
 
     // Delete Record
@@ -34,15 +40,15 @@ public class CallRecordService {
         callRecordRepository.deleteById(id);
     }
 
-    public List<CallRecord> getCallsByUserId(
-            Long userId
-    ) {
-        return callRecordRepository.findByUserId(
-                userId
-        );
+    public List<CallRecord> getCallsByUserId(Long userId) {
+        return callRecordRepository.findByUserId(userId);
+    }
+
+    public List<CallRecord> getCallsByUserIdAndCompanyId(Long userId, Long companyId) {
+        return callRecordRepository.findByUserIdAndCompanyIdOrderByCreatedAtDesc(userId, companyId);
     }
 
     public List<CallRecord> getCallsByCompanyId(Long companyId) {
-        return callRecordRepository.findByUserCompanyId(companyId);
+        return callRecordRepository.findByCompanyIdOrderByCreatedAtDesc(companyId);
     }
 }

@@ -3,6 +3,7 @@ package com.convexa.ai.convexa_ai_backend.entity;
 import jakarta.persistence.*;
 import lombok.*;
 import java.time.LocalDateTime;
+import java.util.List;
 
 @Entity
 @Table(name = "companies", indexes = {
@@ -33,7 +34,9 @@ public class Company {
 
     private String billingEmail;
     private String timezone;
-    private String status;
+
+    @Enumerated(EnumType.STRING)
+    private CompanyStatus status;
 
     @Builder.Default
     private Boolean onboardingCompleted = false;
@@ -46,6 +49,9 @@ public class Company {
 
     @OneToOne(mappedBy = "company", cascade = CascadeType.ALL, fetch = FetchType.LAZY)
     private Subscription subscription;
+
+    @OneToMany(mappedBy = "company", cascade = CascadeType.ALL, fetch = FetchType.LAZY)
+    private List<OrganizationMembership> memberships;
 
     private LocalDateTime createdAt;
     private LocalDateTime updatedAt;

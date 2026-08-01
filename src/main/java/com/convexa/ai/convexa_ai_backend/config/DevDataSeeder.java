@@ -4,6 +4,9 @@ import com.convexa.ai.convexa_ai_backend.entity.CallRecord;
 import com.convexa.ai.convexa_ai_backend.entity.Role;
 import com.convexa.ai.convexa_ai_backend.entity.User;
 import com.convexa.ai.convexa_ai_backend.entity.Company;
+import com.convexa.ai.convexa_ai_backend.entity.CompanyStatus;
+import com.convexa.ai.convexa_ai_backend.entity.MembershipStatus;
+import com.convexa.ai.convexa_ai_backend.entity.OrganizationMembership;
 import com.convexa.ai.convexa_ai_backend.entity.Subscription;
 import com.convexa.ai.convexa_ai_backend.entity.SubscriptionPlan;
 import com.convexa.ai.convexa_ai_backend.entity.SubscriptionStatus;
@@ -11,6 +14,7 @@ import com.convexa.ai.convexa_ai_backend.repository.CallRecordRepository;
 import com.convexa.ai.convexa_ai_backend.repository.UserRepository;
 import com.convexa.ai.convexa_ai_backend.repository.CompanyRepository;
 import com.convexa.ai.convexa_ai_backend.repository.SubscriptionRepository;
+import com.convexa.ai.convexa_ai_backend.repository.OrganizationMembershipRepository;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -68,6 +72,9 @@ public class DevDataSeeder implements CommandLineRunner {
 
     @Autowired
     private SubscriptionRepository subscriptionRepository;
+
+    @Autowired
+    private OrganizationMembershipRepository organizationMembershipRepository;
 
     @Autowired
     private PasswordEncoder passwordEncoder;
@@ -144,7 +151,7 @@ public class DevDataSeeder implements CommandLineRunner {
                 .website("https://convexa.ai")
                 .companySize("50-200")
                 .timezone("America/New_York")
-                .status("ACTIVE")
+                .status(CompanyStatus.ACTIVE)
                 .onboardingCompleted(true)
                 .profileCompletionPercentage(100)
                 .build();
@@ -188,7 +195,19 @@ public class DevDataSeeder implements CommandLineRunner {
                     .provider("LOCAL")
                     .build();
 
-            employees.add(userRepository.save(user));
+            User savedUser = userRepository.save(user);
+            employees.add(savedUser);
+
+            // Create membership for seed employee
+            OrganizationMembership membership = OrganizationMembership.builder()
+                    .user(savedUser)
+                    .company(savedCompany)
+                    .role(role)
+                    .status(MembershipStatus.ACTIVE)
+                    .joinedAt(LocalDateTime.now())
+                    .lastActivatedAt(LocalDateTime.now())
+                    .build();
+            organizationMembershipRepository.save(membership);
         }
         return employees;
     }
@@ -254,6 +273,7 @@ public class DevDataSeeder implements CommandLineRunner {
                 .objections(toJson(randomObjections(tier)))
                 .status("COMPLETED")
                 .createdAt(createdAt)
+                .company(employee.getCompany())
                 .user(employee)
                 .build();
     }

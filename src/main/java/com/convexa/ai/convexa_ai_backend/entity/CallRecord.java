@@ -1,6 +1,7 @@
 package com.convexa.ai.convexa_ai_backend.entity;
 
 import com.fasterxml.jackson.annotation.JsonIgnore;
+import com.fasterxml.jackson.annotation.JsonProperty;
 import jakarta.persistence.*;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Size;
@@ -94,6 +95,18 @@ public class CallRecord {
     @Column(columnDefinition = "TEXT")
     private String outcomeStatus;
 
+    @com.fasterxml.jackson.annotation.JsonProperty("outcome")
+    public String getOutcome() {
+        return this.outcomeStatus != null ? this.outcomeStatus : "Pending";
+    }
+
+    @com.fasterxml.jackson.annotation.JsonProperty("outcome")
+    public void setOutcome(String outcome) {
+        if (outcome != null) {
+            this.outcomeStatus = outcome;
+        }
+    }
+
     // ── actionItems ──
     // JSON array of objects: [{"title":"...","completed":false}, ...]
     // Serialized from AnalyzeResponse.getActionItems() (List<Map<String,Object>>).
@@ -150,6 +163,11 @@ public class CallRecord {
     private LocalDateTime createdAt;
 
     @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "company_id")
+    @JsonIgnore
+    private Company company;
+
+    @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "user_id")
     @JsonIgnore
     private User user;
@@ -159,5 +177,15 @@ public class CallRecord {
         if (this.createdAt == null) {
             this.createdAt = LocalDateTime.now();
         }
+    }
+
+    @JsonProperty("uploaderUserId")
+    public Long getUploaderUserId() {
+        return user != null ? user.getId() : null;
+    }
+
+    @JsonProperty("uploaderName")
+    public String getUploaderName() {
+        return user != null ? user.getName() : null;
     }
 }

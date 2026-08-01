@@ -38,6 +38,8 @@ public class CompanyStatsResponse {
     private List<TopPerformer> topPerformers;
     private List<NeedsCoachingItem> needsCoaching;
 
+    private java.util.Map<String, Long> outcomeDistribution;
+
     @Data
     @Builder
     public static class TopPerformer {

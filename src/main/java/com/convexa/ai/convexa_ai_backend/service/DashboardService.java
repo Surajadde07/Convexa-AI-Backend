@@ -24,8 +24,22 @@ public class DashboardService {
      * @param range  "7d" | "30d" | "all" (defaults to "all" for null/unknown)
      */
     public DashboardStatsResponse getStats(Long userId, String range) {
+        return getStats(null, userId, range);
+    }
 
-        List<CallRecord> allCalls = callRecordService.getCallsByUserId(userId);
+    public DashboardStatsResponse getStats(Long companyId, Long userId, String range) {
+        return getStats(companyId, userId, range, null);
+    }
+
+    public DashboardStatsResponse getStats(Long companyId, Long userId, String range, Long scopedToUserId) {
+        List<CallRecord> allCalls;
+        if (scopedToUserId != null && companyId != null) {
+            allCalls = callRecordService.getCallsByUserIdAndCompanyId(scopedToUserId, companyId);
+        } else if (companyId != null) {
+            allCalls = callRecordService.getCallsByCompanyId(companyId);
+        } else {
+            allCalls = callRecordService.getCallsByUserId(userId);
+        }
         List<CallRecord> calls = CallRangeFilter.apply(allCalls, range);
 
         int totalCalls = calls.size();
@@ -102,6 +116,22 @@ public class DashboardService {
                                 needsAttention.size() == 1 ? "s" : "")
         );
 
+        Map<String, Long> outcomeDist = new LinkedHashMap<>();
+        outcomeDist.put("Won", 0L);
+        outcomeDist.put("Follow Up Required", 0L);
+        outcomeDist.put("Escalated", 0L);
+        outcomeDist.put("Pending", 0L);
+        outcomeDist.put("Lost", 0L);
+
+        for (CallRecord c : calls) {
+            String status = (c.getOutcomeStatus() != null && !c.getOutcomeStatus().isBlank()) 
+                    ? c.getOutcomeStatus() 
+                    : c.getOutcome();
+            if (status != null && !status.isBlank()) {
+                outcomeDist.put(status, outcomeDist.getOrDefault(status, 0L) + 1);
+            }
+        }
+
         return DashboardStatsResponse.builder()
                 .totalCalls(totalCalls)
                 .avgScore(round1(avgScore))
@@ -122,6 +152,7 @@ public class DashboardService {
                 .needsAttention(needsAttention)
                 .recommendations(recommendations)
                 .briefing(briefing)
+                .outcomeDistribution(outcomeDist)
                 .build();
     }
 

@@ -11,11 +11,12 @@ import com.convexa.ai.convexa_ai_backend.service.CloudinaryService;
 import com.convexa.ai.convexa_ai_backend.service.CloudinaryService.CloudinaryUploadResult;
 import com.convexa.ai.convexa_ai_backend.exception.SeatLimitExceededException;
 import com.convexa.ai.convexa_ai_backend.exception.DuplicatePendingInvitationException;
-import jakarta.servlet.http.HttpServletRequest;
+import com.convexa.ai.convexa_ai_backend.security.WorkspacePrincipal;
 import jakarta.validation.Valid;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.HashMap;
@@ -66,52 +67,49 @@ public class CompanyController {
     @Autowired
     private ImprovementPlanRepository improvementPlanRepository;
 
+    @Autowired
+    private OrganizationMembershipRepository organizationMembershipRepository;
+
     @GetMapping("/stats")
     public ResponseEntity<CompanyStatsResponse> getCompanyStats(
             @RequestParam(value = "range", required = false, defaultValue = "30d") String range,
-            HttpServletRequest request
+            @AuthenticationPrincipal WorkspacePrincipal principal
     ) {
-        String managerEmail = (String) request.getAttribute("userEmail");
-        User manager = userRepository.findByEmail(managerEmail)
-                .orElseThrow(() -> new RuntimeException("Manager not found"));
-        if (manager.getCompany() == null) {
-            return ResponseEntity.badRequest().build();
+        if (principal == null) {
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
         }
-        return ResponseEntity.ok(companyService.getCompanyStats(manager.getCompany().getId(), range));
+        return ResponseEntity.ok(companyService.getCompanyStats(principal.getCompanyId(), range));
     }
 
     @GetMapping("/employee/{id}")
     public ResponseEntity<EmployeeProfileResponse> getEmployeeProfile(
             @PathVariable Long id,
             @RequestParam(value = "range", required = false, defaultValue = "30d") String range,
-            HttpServletRequest request
+            @AuthenticationPrincipal WorkspacePrincipal principal
     ) {
-        String managerEmail = (String) request.getAttribute("userEmail");
-        User manager = userRepository.findByEmail(managerEmail)
-                .orElseThrow(() -> new RuntimeException("Manager not found"));
-        if (manager.getCompany() == null) {
-            return ResponseEntity.badRequest().build();
+        if (principal == null) {
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
         }
-        return ResponseEntity.ok(companyService.getEmployeeProfile(id, manager.getCompany().getId(), range));
+        return ResponseEntity.ok(companyService.getEmployeeProfile(id, principal.getCompanyId(), range));
     }
 
     @GetMapping("/employees")
-    public ResponseEntity<?> getAllEmployees(HttpServletRequest request) {
-        String managerEmail = (String) request.getAttribute("userEmail");
-        User manager = userRepository.findByEmail(managerEmail)
-                .orElseThrow(() -> new RuntimeException("Manager not found"));
-        if (manager.getCompany() == null) {
-            return ResponseEntity.ok(List.of());
+    public ResponseEntity<?> getAllEmployees(@AuthenticationPrincipal WorkspacePrincipal principal) {
+        if (principal == null) {
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
         }
 
-        List<User> users = userRepository.findByCompanyId(manager.getCompany().getId());
-        List<Map<String, Object>> list = users.stream()
-                .map(u -> {
+        List<OrganizationMembership> memberships = organizationMembershipRepository
+                .findByCompanyIdAndStatus(principal.getCompanyId(), MembershipStatus.ACTIVE);
+
+        List<Map<String, Object>> list = memberships.stream()
+                .map(m -> {
+                    User u = m.getUser();
                     Map<String, Object> map = new HashMap<>();
                     map.put("id", u.getId());
                     map.put("name", u.getName() != null && !u.getName().isBlank() ? u.getName() : u.getEmail());
                     map.put("email", u.getEmail());
-                    map.put("role", u.getRole() != null ? u.getRole().name() : "USER");
+                    map.put("role", m.getRole() != null ? m.getRole().name() : "USER");
                     return map;
                 })
                 .collect(Collectors.toList());
@@ -119,45 +117,41 @@ public class CompanyController {
     }
 
     @GetMapping("/current")
-    public ResponseEntity<?> getCurrentCompany(HttpServletRequest request) {
-        String email = (String) request.getAttribute("userEmail");
-        User user = userRepository.findByEmail(email)
-                .orElseThrow(() -> new RuntimeException("User not found"));
-        if (user.getCompany() == null) {
-            return ResponseEntity.notFound().build();
+    public ResponseEntity<?> getCurrentCompany(@AuthenticationPrincipal WorkspacePrincipal principal) {
+        if (principal == null) {
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
         }
-        return ResponseEntity.ok(user.getCompany());
+        Company company = companyRepository.findById(principal.getCompanyId())
+                .orElseThrow(() -> new RuntimeException("Company not found"));
+        return ResponseEntity.ok(company);
     }
 
     @GetMapping("/profile")
-    public ResponseEntity<?> getCompanyProfile(HttpServletRequest request) {
-        String email = (String) request.getAttribute("userEmail");
-        User user = userRepository.findByEmail(email)
-                .orElseThrow(() -> new RuntimeException("User not found"));
-        if (user.getCompany() == null) {
-            return ResponseEntity.notFound().build();
+    public ResponseEntity<?> getCompanyProfile(@AuthenticationPrincipal WorkspacePrincipal principal) {
+        if (principal == null) {
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
         }
-        return ResponseEntity.ok(user.getCompany());
+        Company company = companyRepository.findById(principal.getCompanyId())
+                .orElseThrow(() -> new RuntimeException("Company not found"));
+        return ResponseEntity.ok(company);
     }
 
     @PatchMapping("/profile")
     public ResponseEntity<?> updateCompanyProfile(
             @RequestBody CompanyProfileUpdateRequest req,
-            HttpServletRequest request
+            @AuthenticationPrincipal WorkspacePrincipal principal
     ) {
-        String email = (String) request.getAttribute("userEmail");
-        User user = userRepository.findByEmail(email)
-                .orElseThrow(() -> new RuntimeException("User not found"));
+        if (principal == null) {
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
+        }
 
         // Only OWNER and ADMIN are allowed to edit Company Settings/Branding
-        if (user.getRole() != Role.OWNER && user.getRole() != Role.ADMIN) {
+        if (principal.getRole() != Role.OWNER && principal.getRole() != Role.ADMIN) {
             return ResponseEntity.status(403).body(Map.of("error", "Only owners and admins can update company settings."));
         }
 
-        Company company = user.getCompany();
-        if (company == null) {
-            return ResponseEntity.notFound().build();
-        }
+        Company company = companyRepository.findById(principal.getCompanyId())
+                .orElseThrow(() -> new RuntimeException("Company not found"));
 
         if (req.getCompanyName() != null) company.setCompanyName(req.getCompanyName());
         if (req.getCompanyLogo() != null) {
@@ -175,21 +169,19 @@ public class CompanyController {
     @PostMapping("/logo")
     public ResponseEntity<?> uploadLogo(
             @RequestParam("logo") org.springframework.web.multipart.MultipartFile file,
-            HttpServletRequest request
+            @AuthenticationPrincipal WorkspacePrincipal principal
     ) {
-        String email = (String) request.getAttribute("userEmail");
-        User user = userRepository.findByEmail(email)
-                .orElseThrow(() -> new RuntimeException("User not found"));
+        if (principal == null) {
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
+        }
 
         // Only OWNER and ADMIN are allowed to edit Company Settings/Branding
-        if (user.getRole() != Role.OWNER && user.getRole() != Role.ADMIN) {
+        if (principal.getRole() != Role.OWNER && principal.getRole() != Role.ADMIN) {
             return ResponseEntity.status(403).body(Map.of("error", "Only owners and admins can upload the company logo."));
         }
 
-        Company company = user.getCompany();
-        if (company == null) {
-            return ResponseEntity.notFound().build();
-        }
+        Company company = companyRepository.findById(principal.getCompanyId())
+                .orElseThrow(() -> new RuntimeException("Company not found"));
 
         // 1. Validate file type: PNG, JPG, JPEG, WEBP
         String contentType = file.getContentType();
@@ -224,15 +216,18 @@ public class CompanyController {
     public ResponseEntity<?> addCoachingSession(
             @PathVariable Long id,
             @RequestBody CoachingSessionRequest req,
-            HttpServletRequest request
+            @AuthenticationPrincipal WorkspacePrincipal principal
     ) {
-        String managerEmail = (String) request.getAttribute("userEmail");
-        User manager = userRepository.findByEmail(managerEmail)
+        if (principal == null) {
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
+        }
+
+        User manager = userRepository.findById(principal.getUserId())
                 .orElseThrow(() -> new RuntimeException("Manager not found"));
         User employee = userRepository.findById(id)
                 .orElseThrow(() -> new RuntimeException("Employee not found"));
 
-        if (employee.getCompany() == null || !employee.getCompany().getId().equals(manager.getCompany().getId())) {
+        if (!organizationMembershipRepository.existsByUserIdAndCompanyId(employee.getId(), principal.getCompanyId())) {
             throw new RuntimeException("Unauthorized: Employee belongs to a different company.");
         }
 
@@ -255,15 +250,18 @@ public class CompanyController {
     public ResponseEntity<?> addLearningAssignment(
             @PathVariable Long id,
             @RequestBody LearningAssignmentRequest req,
-            HttpServletRequest request
+            @AuthenticationPrincipal WorkspacePrincipal principal
     ) {
-        String managerEmail = (String) request.getAttribute("userEmail");
-        User manager = userRepository.findByEmail(managerEmail)
+        if (principal == null) {
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
+        }
+
+        User manager = userRepository.findById(principal.getUserId())
                 .orElseThrow(() -> new RuntimeException("Manager not found"));
         User employee = userRepository.findById(id)
                 .orElseThrow(() -> new RuntimeException("Employee not found"));
 
-        if (employee.getCompany() == null || !employee.getCompany().getId().equals(manager.getCompany().getId())) {
+        if (!organizationMembershipRepository.existsByUserIdAndCompanyId(employee.getId(), principal.getCompanyId())) {
             throw new RuntimeException("Unauthorized: Employee belongs to a different company.");
         }
 
@@ -284,15 +282,18 @@ public class CompanyController {
     public ResponseEntity<?> addManagerNote(
             @PathVariable Long id,
             @RequestBody ManagerNoteRequest req,
-            HttpServletRequest request
+            @AuthenticationPrincipal WorkspacePrincipal principal
     ) {
-        String managerEmail = (String) request.getAttribute("userEmail");
-        User manager = userRepository.findByEmail(managerEmail)
+        if (principal == null) {
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
+        }
+
+        User manager = userRepository.findById(principal.getUserId())
                 .orElseThrow(() -> new RuntimeException("Manager not found"));
         User employee = userRepository.findById(id)
                 .orElseThrow(() -> new RuntimeException("Employee not found"));
 
-        if (employee.getCompany() == null || !employee.getCompany().getId().equals(manager.getCompany().getId())) {
+        if (!organizationMembershipRepository.existsByUserIdAndCompanyId(employee.getId(), principal.getCompanyId())) {
             throw new RuntimeException("Unauthorized: Employee belongs to a different company.");
         }
 
@@ -310,15 +311,18 @@ public class CompanyController {
     public ResponseEntity<?> createImprovementPlan(
             @PathVariable Long id,
             @RequestBody ImprovementPlanRequest req,
-            HttpServletRequest request
+            @AuthenticationPrincipal WorkspacePrincipal principal
     ) {
-        String managerEmail = (String) request.getAttribute("userEmail");
-        User manager = userRepository.findByEmail(managerEmail)
+        if (principal == null) {
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
+        }
+
+        User manager = userRepository.findById(principal.getUserId())
                 .orElseThrow(() -> new RuntimeException("Manager not found"));
         User employee = userRepository.findById(id)
                 .orElseThrow(() -> new RuntimeException("Employee not found"));
 
-        if (employee.getCompany() == null || !employee.getCompany().getId().equals(manager.getCompany().getId())) {
+        if (!organizationMembershipRepository.existsByUserIdAndCompanyId(employee.getId(), principal.getCompanyId())) {
             throw new RuntimeException("Unauthorized: Employee belongs to a different company.");
         }
 
@@ -340,29 +344,27 @@ public class CompanyController {
     @PostMapping("/invitations")
     public ResponseEntity<?> createInvitation(
             @Valid @RequestBody InvitationRequest req,
-            HttpServletRequest request
+            @AuthenticationPrincipal WorkspacePrincipal principal
     ) {
-        String managerEmail = (String) request.getAttribute("userEmail");
-        User manager = userRepository.findByEmail(managerEmail)
-                .orElseThrow(() -> new RuntimeException("Manager not found"));
-        
-        if (manager.getCompany() == null) {
-            return ResponseEntity.badRequest().body(Map.of("error", "Manager is not associated with any company"));
+        if (principal == null) {
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
         }
+
+        User manager = userRepository.findById(principal.getUserId())
+                .orElseThrow(() -> new RuntimeException("Manager not found"));
 
         InvitationResponse invite = invitationService.createInvitation(manager, req);
         return ResponseEntity.ok(invite);
     }
 
     @GetMapping("/invitations")
-    public ResponseEntity<?> getCompanyInvitations(HttpServletRequest request) {
-        String managerEmail = (String) request.getAttribute("userEmail");
-        User manager = userRepository.findByEmail(managerEmail)
-                .orElseThrow(() -> new RuntimeException("Manager not found"));
-        
-        if (manager.getCompany() == null) {
-            return ResponseEntity.ok(List.of());
+    public ResponseEntity<?> getCompanyInvitations(@AuthenticationPrincipal WorkspacePrincipal principal) {
+        if (principal == null) {
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
         }
+
+        User manager = userRepository.findById(principal.getUserId())
+                .orElseThrow(() -> new RuntimeException("Manager not found"));
 
         return ResponseEntity.ok(invitationService.getInvitations(manager));
     }
@@ -370,12 +372,15 @@ public class CompanyController {
     @DeleteMapping("/invitations/{id}")
     public ResponseEntity<?> cancelInvitation(
             @PathVariable Long id,
-            HttpServletRequest request
+            @AuthenticationPrincipal WorkspacePrincipal principal
     ) {
-        String managerEmail = (String) request.getAttribute("userEmail");
-        User manager = userRepository.findByEmail(managerEmail)
+        if (principal == null) {
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
+        }
+
+        User manager = userRepository.findById(principal.getUserId())
                 .orElseThrow(() -> new RuntimeException("Manager not found"));
-        
+
         invitationService.cancelInvitation(manager, id);
         return ResponseEntity.ok(Map.of("message", "Invitation cancelled successfully"));
     }
@@ -387,45 +392,39 @@ public class CompanyController {
             @RequestParam(value = "search", defaultValue = "") String search,
             @RequestParam(value = "role", defaultValue = "") String role,
             @RequestParam(value = "sort", defaultValue = "createdAt,desc") String sort,
-            HttpServletRequest request
+            @AuthenticationPrincipal WorkspacePrincipal principal
     ) {
-        String email = (String) request.getAttribute("userEmail");
-        User actor = userRepository.findByEmail(email)
-                .orElseThrow(() -> new RuntimeException("Actor not found"));
-
-        if (actor.getCompany() == null) {
-            return ResponseEntity.badRequest().build();
+        if (principal == null) {
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
         }
 
         // Auto-sync seat count to match actual DB membership before returning members list.
-        // This self-corrects any stale values left by historical bugs.
-        subscriptionService.syncSeatCount(actor.getCompany().getId());
+        subscriptionService.syncSeatCount(principal.getCompanyId());
 
-        PagedMembersResponse response = userService.getMembers(actor.getCompany().getId(), page, size, search, role, sort);
+        PagedMembersResponse response = userService.getMembers(principal.getCompanyId(), page, size, search, role, sort);
         return ResponseEntity.ok(response);
     }
 
     @PostMapping("/sync-seats")
-    public ResponseEntity<?> syncSeats(HttpServletRequest request) {
-        String email = (String) request.getAttribute("userEmail");
-        User actor = userRepository.findByEmail(email)
-                .orElseThrow(() -> new RuntimeException("Actor not found"));
-
-        if (actor.getCompany() == null) {
-            return ResponseEntity.badRequest().body(Map.of("error", "No company association"));
+    public ResponseEntity<?> syncSeats(@AuthenticationPrincipal WorkspacePrincipal principal) {
+        if (principal == null) {
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
         }
 
-        int actualCount = subscriptionService.syncSeatCount(actor.getCompany().getId());
+        int actualCount = subscriptionService.syncSeatCount(principal.getCompanyId());
         return ResponseEntity.ok(Map.of("message", "Seat count synchronized", "currentSeatCount", actualCount));
     }
 
     @PostMapping("/invitations/{id}/resend")
     public ResponseEntity<?> resendInvitation(
             @PathVariable Long id,
-            HttpServletRequest request
+            @AuthenticationPrincipal WorkspacePrincipal principal
     ) {
-        String email = (String) request.getAttribute("userEmail");
-        User actor = userRepository.findByEmail(email)
+        if (principal == null) {
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
+        }
+
+        User actor = userRepository.findById(principal.getUserId())
                 .orElseThrow(() -> new RuntimeException("Actor not found"));
 
         InvitationResponse response = invitationService.resendInvitation(actor, id);
@@ -436,10 +435,13 @@ public class CompanyController {
     public ResponseEntity<?> updateMemberRole(
             @PathVariable Long id,
             @RequestBody RoleUpdateRequest req,
-            HttpServletRequest request
+            @AuthenticationPrincipal WorkspacePrincipal principal
     ) {
-        String email = (String) request.getAttribute("userEmail");
-        User actor = userRepository.findByEmail(email)
+        if (principal == null) {
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
+        }
+
+        User actor = userRepository.findById(principal.getUserId())
                 .orElseThrow(() -> new RuntimeException("Actor not found"));
 
         Role newRole;
@@ -449,20 +451,20 @@ public class CompanyController {
             return ResponseEntity.badRequest().body(Map.of("error", "Invalid role specified"));
         }
 
-        userService.updateMemberRole(actor, id, newRole);
+        userService.updateMemberRole(principal.getCompanyId(), principal.getUserId(), id, newRole);
         return ResponseEntity.ok(Map.of("message", "Member role updated successfully"));
     }
 
     @DeleteMapping("/members/{id}")
     public ResponseEntity<?> removeMember(
             @PathVariable Long id,
-            HttpServletRequest request
+            @AuthenticationPrincipal WorkspacePrincipal principal
     ) {
-        String email = (String) request.getAttribute("userEmail");
-        User actor = userRepository.findByEmail(email)
-                .orElseThrow(() -> new RuntimeException("Actor not found"));
+        if (principal == null) {
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
+        }
 
-        userService.removeMember(actor, id);
+        userService.removeMember(principal.getCompanyId(), principal.getUserId(), id);
         return ResponseEntity.ok(Map.of("message", "Member removed successfully"));
     }
 

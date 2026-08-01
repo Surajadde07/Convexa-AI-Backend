@@ -47,6 +47,9 @@ public class CallRecordController {
     @Autowired
     private UserRepository userRepository;
 
+    @Autowired
+    private com.convexa.ai.convexa_ai_backend.repository.CompanyRepository companyRepository;
+
     // ── Cloudinary service — constructor injection per Spring Boot best practice ──
     private final CloudinaryService cloudinaryService;
 
@@ -62,24 +65,19 @@ public class CallRecordController {
 
     @PostMapping("/upload")
     public ResponseEntity<?> uploadAudio(
-            @RequestParam("audio") MultipartFile file, HttpServletRequest request
+            @RequestParam("audio") MultipartFile file,
+            @org.springframework.security.core.annotation.AuthenticationPrincipal com.convexa.ai.convexa_ai_backend.security.WorkspacePrincipal principal
     ) {
 
         try {
+            if (principal == null) {
+                return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
+            }
 
-            String userEmail =
-                    (String) request.getAttribute(
-                            "userEmail"
-                    );
-
-            User user =
-                    userRepository.findByEmail(
-                            userEmail
-                    ).orElseThrow(() ->
-                            new RuntimeException(
-                                    "User not found"
-                            )
-                    );
+            User user = userRepository.findById(principal.getUserId())
+                    .orElseThrow(() -> new RuntimeException("User not found"));
+            com.convexa.ai.convexa_ai_backend.entity.Company company = companyRepository.findById(principal.getCompanyId())
+                    .orElseThrow(() -> new RuntimeException("Workspace company not found"));
 
             // ===============================
             // UPLOAD AUDIO TO CLOUDINARY
@@ -341,6 +339,7 @@ public class CallRecordController {
                     .objections(objectionsJson)         // JSON array of objects
                     // ──────────────────────────────────────────────────────
                     .status("COMPLETED")
+                    .company(company)
                     .user(user)
                     .build();
 
@@ -371,57 +370,87 @@ public class CallRecordController {
 
     // GET ALL CALL RECORDS
     @GetMapping
-    public List<CallRecord> getAllCallRecords() {
-        return callRecordService.getAllCallRecords();
+    public List<CallRecord> getAllCallRecords(
+            @org.springframework.security.core.annotation.AuthenticationPrincipal com.convexa.ai.convexa_ai_backend.security.WorkspacePrincipal principal
+    ) {
+        if (principal == null) {
+            throw new RuntimeException("Unauthorized");
+        }
+        if (principal.getRole() == com.convexa.ai.convexa_ai_backend.entity.Role.USER) {
+            return callRecordService.getCallsByUserIdAndCompanyId(principal.getUserId(), principal.getCompanyId());
+        }
+        return callRecordService.getCallsByCompanyId(principal.getCompanyId());
     }
 
     // GET CALL RECORD BY ID
+    @Autowired
+    private com.convexa.ai.convexa_ai_backend.repository.OrganizationMembershipRepository organizationMembershipRepository;
+
     @GetMapping("/{id}")
-    public CallRecord getCallRecordById(@PathVariable Long id) {
-        return callRecordService.getCallRecordById(id);
+    public ResponseEntity<?> getCallRecordById(
+            @PathVariable Long id,
+            @org.springframework.security.core.annotation.AuthenticationPrincipal com.convexa.ai.convexa_ai_backend.security.WorkspacePrincipal principal
+    ) {
+        if (principal == null) {
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body("Unauthorized");
+        }
+        CallRecord record = callRecordService.getCallRecordByIdAndCompanyId(id, principal.getCompanyId());
+        if (record == null) {
+            return ResponseEntity.status(HttpStatus.NOT_FOUND).body("Call record not found");
+        }
+
+        if (principal.getRole() == com.convexa.ai.convexa_ai_backend.entity.Role.USER) {
+            if (record.getUser() == null || !record.getUser().getId().equals(principal.getUserId())) {
+                return ResponseEntity.status(HttpStatus.FORBIDDEN).body("You do not have permission to view this call");
+            }
+        }
+
+        return ResponseEntity.ok(record);
     }
 
     // DELETE CALL RECORD
     //
     // Deletes the Cloudinary asset first, then the database row.
+    // OWNER and ADMIN can delete any call in the workspace.
+    // MANAGER and USER can ONLY delete their own uploaded calls.
     @DeleteMapping("/{id}")
-    public String deleteCallRecord(@PathVariable Long id) {
-        CallRecord existing = callRecordService.getCallRecordById(id);
+    public ResponseEntity<?> deleteCallRecord(
+            @PathVariable Long id,
+            @org.springframework.security.core.annotation.AuthenticationPrincipal com.convexa.ai.convexa_ai_backend.security.WorkspacePrincipal principal
+    ) {
+        if (principal == null) {
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body("Unauthorized");
+        }
+        CallRecord existing = callRecordService.getCallRecordByIdAndCompanyId(id, principal.getCompanyId());
+        if (existing == null) {
+            return ResponseEntity.status(HttpStatus.NOT_FOUND).body("Call record not found");
+        }
 
-        if (existing != null && existing.getCloudinaryPublicId() != null) {
+        boolean isPrivileged = principal.getRole() == com.convexa.ai.convexa_ai_backend.entity.Role.OWNER
+                || principal.getRole() == com.convexa.ai.convexa_ai_backend.entity.Role.ADMIN;
+
+        boolean isUploader = existing.getUser() != null && existing.getUser().getId().equals(principal.getUserId());
+
+        if (!isPrivileged && !isUploader) {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN).body("You do not have permission to delete this call record");
+        }
+
+        if (existing.getCloudinaryPublicId() != null) {
             cloudinaryService.deleteAudio(existing.getCloudinaryPublicId());
         }
 
         callRecordService.deleteCallRecord(id);
-        return "Call Record Deleted Successfully";
+        return ResponseEntity.ok("Call Record Deleted Successfully");
     }
 
     @GetMapping("/my-calls")
     public List<CallRecord> getMyCalls(
-            HttpServletRequest request
+            @org.springframework.security.core.annotation.AuthenticationPrincipal com.convexa.ai.convexa_ai_backend.security.WorkspacePrincipal principal
     ) {
-
-        String email =
-                (String) request.getAttribute(
-                        "userEmail"
-                );
-
-        System.out.println("EMAIL FROM JWT = " + email);
-
-        User user =
-                userRepository.findByEmail(email)
-                        .orElseThrow(() ->
-                                new RuntimeException(
-                                        "User not found"
-                                )
-                        );
-
-        System.out.println("USER FOUND = " + user.getEmail());
-
-        return callRecordService
-                .getCallsByUserId(
-                        user.getId()
-                );
+        if (principal == null) {
+            throw new RuntimeException("Unauthorized");
+        }
+        return callRecordService.getCallsByUserIdAndCompanyId(principal.getUserId(), principal.getCompanyId());
     }
 
     // ── REMOVED: POST /api/calls/timeline ─────────────────────────────────────

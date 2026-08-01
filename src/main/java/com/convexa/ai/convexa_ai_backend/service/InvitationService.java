@@ -29,6 +29,9 @@ public class InvitationService {
     private UserRepository userRepository;
 
     @Autowired
+    private com.convexa.ai.convexa_ai_backend.repository.OrganizationMembershipRepository organizationMembershipRepository;
+
+    @Autowired
     private EmailService emailService;
 
     @Autowired
@@ -80,7 +83,7 @@ public class InvitationService {
                 .invitedBy(manager)
                 .token(token)
                 .status(InvitationStatus.PENDING)
-                .expiresAt(LocalDateTime.now().plusDays(2))
+                .expiresAt(LocalDateTime.now().plusDays(7))
                 .build();
 
         invitationRepository.save(invite);
@@ -163,24 +166,15 @@ public class InvitationService {
             throw new RuntimeException("Invitation is no longer active (Status: " + invite.getStatus() + ")");
         }
 
+        User user;
         Optional<User> existingUserOpt = userRepository.findByEmail(invite.getEmail());
         if (existingUserOpt.isPresent()) {
-            User user = existingUserOpt.get();
-            // Idempotency: if already a member of this exact workspace, just mark accepted
-            if (user.getCompany() != null && user.getCompany().getId().equals(invite.getCompany().getId())) {
-                invite.setStatus(InvitationStatus.ACCEPTED);
-                invitationRepository.save(invite);
-                return;
-            }
-            user.setCompany(invite.getCompany());
-            user.setRole(invite.getRole());
-            user.setDepartment(invite.getDepartment());
-            userRepository.save(user);
+            user = existingUserOpt.get();
         } else {
             if (req.getPassword() == null || req.getPassword().isBlank()) {
                 throw new RuntimeException("Password is required for new accounts");
             }
-            User user = User.builder()
+            user = User.builder()
                     .name(req.getName())
                     .email(invite.getEmail())
                     .password(passwordEncoder.encode(req.getPassword()))
@@ -190,8 +184,48 @@ public class InvitationService {
                     .provider("LOCAL")
                     .build();
 
-            userRepository.save(user);
+            user = userRepository.save(user);
         }
+
+        // Duplicate Membership Protection Check
+        Optional<OrganizationMembership> existingMembershipOpt = 
+                organizationMembershipRepository.findByUserIdAndCompanyId(user.getId(), invite.getCompany().getId());
+
+        if (existingMembershipOpt.isPresent()) {
+            OrganizationMembership membership = existingMembershipOpt.get();
+            if (membership.getStatus() == MembershipStatus.ACTIVE) {
+                throw new RuntimeException("User is already an active member of this workspace.");
+            } else if (membership.getStatus() == MembershipStatus.PENDING) {
+                throw new RuntimeException("Invitation has already been accepted or is processing.");
+            } else if (membership.getStatus() == MembershipStatus.REMOVED || membership.getStatus() == MembershipStatus.LEFT) {
+                // Restoration flow
+                membership.setStatus(MembershipStatus.ACTIVE);
+                membership.setLastActivatedAt(LocalDateTime.now());
+                membership.setRemovedBy(null);
+                membership.setRemovedAt(null);
+                membership.setRole(invite.getRole());
+                membership.setDepartment(invite.getDepartment());
+                organizationMembershipRepository.save(membership);
+            }
+        } else {
+            // New membership
+            OrganizationMembership newMembership = OrganizationMembership.builder()
+                    .user(user)
+                    .company(invite.getCompany())
+                    .role(invite.getRole())
+                    .department(invite.getDepartment())
+                    .status(MembershipStatus.ACTIVE)
+                    .joinedAt(LocalDateTime.now())
+                    .lastActivatedAt(LocalDateTime.now())
+                    .build();
+            organizationMembershipRepository.save(newMembership);
+        }
+
+        // Legacy dual-write update on User entity
+        user.setCompany(invite.getCompany());
+        user.setRole(invite.getRole());
+        user.setDepartment(invite.getDepartment());
+        userRepository.save(user);
 
         invite.setStatus(InvitationStatus.ACCEPTED);
         invitationRepository.save(invite);
@@ -216,7 +250,7 @@ public class InvitationService {
         String newToken = UUID.randomUUID().toString();
         invite.setToken(newToken);
         invite.setStatus(InvitationStatus.PENDING);
-        invite.setExpiresAt(LocalDateTime.now().plusDays(2));
+        invite.setExpiresAt(LocalDateTime.now().plusDays(7));
         invite.setCreatedAt(LocalDateTime.now());
         invitationRepository.save(invite);
 

@@ -21,8 +21,22 @@ public class AnalyticsService {
     private static final DateTimeFormatter DAY_KEY = DateTimeFormatter.ofPattern("yyyy-MM-dd");
 
     public AnalyticsResponse getAnalytics(Long userId, String range) {
+        return getAnalytics(null, userId, range);
+    }
 
-        List<CallRecord> allCalls = callRecordService.getCallsByUserId(userId);
+    public AnalyticsResponse getAnalytics(Long companyId, Long userId, String range) {
+        return getAnalytics(companyId, userId, range, null);
+    }
+
+    public AnalyticsResponse getAnalytics(Long companyId, Long userId, String range, Long scopedToUserId) {
+        List<CallRecord> allCalls;
+        if (scopedToUserId != null && companyId != null) {
+            allCalls = callRecordService.getCallsByUserIdAndCompanyId(scopedToUserId, companyId);
+        } else if (companyId != null) {
+            allCalls = callRecordService.getCallsByCompanyId(companyId);
+        } else {
+            allCalls = callRecordService.getCallsByUserId(userId);
+        }
         List<CallRecord> calls = CallRangeFilter.apply(allCalls, range);
 
         int totalCalls = calls.size();
