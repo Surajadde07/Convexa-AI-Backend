@@ -59,6 +59,9 @@ public class CompanyController {
     private CoachingSessionRepository coachingSessionRepository;
 
     @Autowired
+    private com.convexa.ai.convexa_ai_backend.service.DailyCompanyMetricsService dailyCompanyMetricsService;
+
+    @Autowired
     private LearningAssignmentRepository learningAssignmentRepository;
 
     @Autowired
@@ -70,6 +73,9 @@ public class CompanyController {
     @Autowired
     private OrganizationMembershipRepository organizationMembershipRepository;
 
+    @Autowired
+    private com.convexa.ai.convexa_ai_backend.service.MediaLibraryService mediaLibraryService;
+
     @GetMapping("/stats")
     public ResponseEntity<CompanyStatsResponse> getCompanyStats(
             @RequestParam(value = "range", required = false, defaultValue = "30d") String range,
@@ -79,6 +85,70 @@ public class CompanyController {
             return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
         }
         return ResponseEntity.ok(companyService.getCompanyStats(principal.getCompanyId(), range));
+    }
+
+    /**
+     * GET /api/company/media-library
+     *
+     * Returns real, database-derived media library statistics for the authenticated
+     * company workspace. No Cloudinary Admin API calls are made at request time.
+     * Company isolation is enforced server-side via the JWT-resolved principal.
+     */
+    @GetMapping("/media-library")
+    public ResponseEntity<?> getMediaLibrary(
+            @AuthenticationPrincipal WorkspacePrincipal principal
+    ) {
+        if (principal == null) {
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
+        }
+        try {
+            return ResponseEntity.ok(mediaLibraryService.getMediaLibrary(principal));
+        } catch (Exception e) {
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body("Failed to load media library: " + e.getMessage());
+        }
+    }
+
+    /**
+     * GET /api/company/alerts
+     * Returns server-computed data-driven alerts for the company.
+     */
+    @GetMapping("/alerts")
+    public ResponseEntity<?> getCompanyAlerts(
+            @RequestParam(value = "range", required = false, defaultValue = "30d") String range,
+            @AuthenticationPrincipal WorkspacePrincipal principal
+    ) {
+        if (principal == null || principal.getCompanyId() == null) {
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
+        }
+        try {
+            var stats = companyService.getCompanyStats(principal.getCompanyId(), range);
+            return ResponseEntity.ok(stats.getAlerts() != null ? stats.getAlerts() : List.of());
+        } catch (Exception e) {
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body("Failed to load alerts: " + e.getMessage());
+        }
+    }
+
+    /**
+     * GET /api/company/team-insights
+     * Returns 6 server-computed Executive Team Insights for the company.
+     */
+    @GetMapping("/team-insights")
+    public ResponseEntity<?> getTeamInsights(
+            @RequestParam(value = "range", required = false, defaultValue = "30d") String range,
+            @AuthenticationPrincipal WorkspacePrincipal principal
+    ) {
+        if (principal == null || principal.getCompanyId() == null) {
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
+        }
+        try {
+            var stats = companyService.getCompanyStats(principal.getCompanyId(), range);
+            return ResponseEntity.ok(stats.getTeamInsights());
+        } catch (Exception e) {
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body("Failed to load team insights: " + e.getMessage());
+        }
     }
 
     @GetMapping("/employee/{id}")
@@ -466,6 +536,19 @@ public class CompanyController {
 
         userService.removeMember(principal.getCompanyId(), principal.getUserId(), id);
         return ResponseEntity.ok(Map.of("message", "Member removed successfully"));
+    }
+
+    @GetMapping("/daily-metrics")
+    public ResponseEntity<?> getDailyMetrics(
+            @RequestParam(value = "range", defaultValue = "30d") String range,
+            @AuthenticationPrincipal WorkspacePrincipal principal
+    ) {
+        if (principal == null) {
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
+        }
+
+        List<DailyCompanyMetricsDTO> metrics = dailyCompanyMetricsService.getDailyMetrics(principal.getCompanyId(), range);
+        return ResponseEntity.ok(metrics);
     }
 
     @ExceptionHandler(SeatLimitExceededException.class)

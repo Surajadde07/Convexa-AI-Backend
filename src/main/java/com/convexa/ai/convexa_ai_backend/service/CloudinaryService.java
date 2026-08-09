@@ -63,7 +63,7 @@ public class CloudinaryService {
                 throw new CloudinaryUploadException("Cloudinary returned an empty URL");
             }
 
-            return new CloudinaryUploadResult(secureUrl, publicId);
+            return new CloudinaryUploadResult(secureUrl, publicId, null);
 
         } catch (IOException e) {
             throw new CloudinaryUploadException(
@@ -116,7 +116,18 @@ public class CloudinaryService {
                 throw new CloudinaryUploadException("Cloudinary returned an empty URL");
             }
 
-            return new CloudinaryUploadResult(secureUrl, publicId);
+            // Extract the raw byte size from the Cloudinary upload response.
+            // Cloudinary returns this as a Number (Integer or Long depending on size).
+            // We convert to Long to handle files larger than ~2 GB correctly.
+            // Null-safe: if for any reason the field is absent, store null rather
+            // than defaulting to 0 (null = unknown, 0 = zero-byte file).
+            Long fileSizeBytes = null;
+            Object bytesObj = uploadResult.get("bytes");
+            if (bytesObj instanceof Number) {
+                fileSizeBytes = ((Number) bytesObj).longValue();
+            }
+
+            return new CloudinaryUploadResult(secureUrl, publicId, fileSizeBytes);
 
         } catch (IOException e) {
             throw new CloudinaryUploadException(
@@ -184,9 +195,15 @@ public class CloudinaryService {
     // ─────────────────────────────────────────────────────────────────────────
 
     /**
-     * Value object returned by {@link #uploadAudio}.
+     * Value object returned by {@link #uploadAudio} and {@link #uploadImage}.
+     *
+     * @param secureUrl      HTTPS URL of the uploaded asset on Cloudinary.
+     * @param publicId       Cloudinary public_id used for deletions.
+     * @param fileSizeBytes  Raw byte size of the uploaded file as reported by
+     *                       Cloudinary (response field: "bytes"). May be null
+     *                       if the upload response did not include a size.
      */
-    public record CloudinaryUploadResult(String secureUrl, String publicId) {}
+    public record CloudinaryUploadResult(String secureUrl, String publicId, Long fileSizeBytes) {}
 
     // ─────────────────────────────────────────────────────────────────────────
     //  Exception type

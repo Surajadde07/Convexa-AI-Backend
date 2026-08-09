@@ -27,18 +27,28 @@ public class CompanyStatsResponse {
     private double negativePercent;
     private double neutralPercent;
 
-    // Count of distinct employees whose last-30-day average score is < 65
+    // Count of distinct employees whose range average score is < 65
     private int coachingNeededCount;
 
-    // Call volume series — bucketed per day, respecting the `range` query
-    // param (7d/30d) independently of the fixed 30-day window used for
-    // Top Performers / Needs Coaching below.
+    // Total risk flags detected across calls in the range (from call.riskFlags JSON, low QA < 65, and escalations)
+    private int riskFlagsCount;
+
+    // AI processing pipeline success percentage (100.0 if all calls COMPLETED)
+    private double aiSuccessRate;
+
+    // Call volume series — bucketed per day, respecting the `range` query param
     private List<AnalyticsResponse.DailyPoint> callVolume;
 
     private List<TopPerformer> topPerformers;
     private List<NeedsCoachingItem> needsCoaching;
 
     private java.util.Map<String, Long> outcomeDistribution;
+
+    // Server-computed 6 Executive Team Insights for the requested time range
+    private ExecutiveTeamInsightsDTO teamInsights;
+
+    // Server-computed data-driven Company Alerts
+    private List<CompanyAlertDTO> alerts;
 
     @Data
     @Builder

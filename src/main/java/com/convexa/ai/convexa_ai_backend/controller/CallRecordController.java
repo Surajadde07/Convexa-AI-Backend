@@ -50,6 +50,9 @@ public class CallRecordController {
     @Autowired
     private com.convexa.ai.convexa_ai_backend.repository.CompanyRepository companyRepository;
 
+    @Autowired
+    private com.convexa.ai.convexa_ai_backend.service.DailyCompanyMetricsService dailyCompanyMetricsService;
+
     // ── Cloudinary service — constructor injection per Spring Boot best practice ──
     private final CloudinaryService cloudinaryService;
 
@@ -88,6 +91,7 @@ public class CallRecordController {
 
             String cloudinaryUrl      = uploadResult.secureUrl();
             String cloudinaryPublicId = uploadResult.publicId();
+            Long   fileSizeBytes      = uploadResult.fileSizeBytes(); // from Cloudinary "bytes" field; null for pre-existing calls
 
             String fileName = file.getOriginalFilename() != null
                     ? file.getOriginalFilename()
@@ -337,6 +341,7 @@ public class CallRecordController {
                     .buyingIntent(buyingIntent)         // scalar string
                     .buyingSignals(buyingSignalsJson)   // JSON array of strings
                     .objections(objectionsJson)         // JSON array of objects
+                    .fileSizeBytes(fileSizeBytes)
                     // ──────────────────────────────────────────────────────
                     .status("COMPLETED")
                     .company(company)
@@ -344,6 +349,17 @@ public class CallRecordController {
                     .build();
 
             callRecordService.saveCallRecord(callRecord);
+
+            // ===============================
+            // REAL-TIME INCREMENTAL DAILY METRICS UPSERT
+            // ===============================
+            try {
+                dailyCompanyMetricsService.updateDailyMetricsForDate(company.getId(), java.time.LocalDate.now());
+            } catch (Exception ex) {
+                // Non-blocking log
+                org.slf4j.LoggerFactory.getLogger(CallRecordController.class)
+                        .error("Failed to update daily company metrics: {}", ex.getMessage());
+            }
 
             // ===============================
             // RETURN RESPONSE

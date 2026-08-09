@@ -33,6 +33,14 @@ public class CallRecord {
     @Column(length = 500)
     private String cloudinaryPublicId;
 
+    // ── fileSizeBytes ────────────────────────────────────────────────────────
+    // Raw byte count of the uploaded audio/video file as reported by Cloudinary
+    // at upload time (Cloudinary response field: "bytes").
+    // Nullable: existing records uploaded before this field was added have NULL.
+    // Do NOT default to 0 — NULL distinguishes "unknown" from "zero-byte file".
+    // Stored as BIGINT to support files larger than 2 GB without overflow.
+    private Long fileSizeBytes;
+
     @Column(columnDefinition = "TEXT")
     @NotBlank(message = "Transcript cannot be empty")
     private String transcript;
@@ -171,6 +179,11 @@ public class CallRecord {
     @JoinColumn(name = "user_id")
     @JsonIgnore
     private User user;
+
+    @ManyToOne(fetch = FetchType.EAGER)
+    @JoinColumn(name = "deal_id")
+    private Deal deal;
+
 
     @PrePersist
     public void onCreate() {

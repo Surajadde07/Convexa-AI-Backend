@@ -32,6 +32,8 @@ build/
 # Local secrets
 src/main/resources/application.properties
 .env
+.env.*
+!.env.example
 
 ### VS Code ###
 .vscode/

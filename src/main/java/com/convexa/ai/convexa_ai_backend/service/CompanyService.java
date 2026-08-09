@@ -5,6 +5,7 @@ import com.convexa.ai.convexa_ai_backend.dto.CompanyStatsResponse;
 import com.convexa.ai.convexa_ai_backend.dto.CompanyStatsResponse.NeedsCoachingItem;
 import com.convexa.ai.convexa_ai_backend.dto.CompanyStatsResponse.TopPerformer;
 import com.convexa.ai.convexa_ai_backend.dto.DashboardStatsResponse;
+import com.convexa.ai.convexa_ai_backend.dto.DailyCompanyMetricsDTO;
 import com.convexa.ai.convexa_ai_backend.dto.EmployeeProfileResponse;
 import com.convexa.ai.convexa_ai_backend.dto.EmployeeProfileResponse.*;
 import com.convexa.ai.convexa_ai_backend.entity.CallRecord;
@@ -21,6 +22,12 @@ import com.convexa.ai.convexa_ai_backend.repository.CoachingSessionRepository;
 import com.convexa.ai.convexa_ai_backend.repository.LearningAssignmentRepository;
 import com.convexa.ai.convexa_ai_backend.repository.ManagerNoteRepository;
 import com.convexa.ai.convexa_ai_backend.repository.ImprovementPlanRepository;
+import com.convexa.ai.convexa_ai_backend.dto.CompanyAlertDTO;
+import com.convexa.ai.convexa_ai_backend.dto.ExecutiveTeamInsightsDTO;
+import com.convexa.ai.convexa_ai_backend.entity.Company;
+import com.convexa.ai.convexa_ai_backend.entity.Subscription;
+import com.convexa.ai.convexa_ai_backend.repository.CompanyRepository;
+import com.convexa.ai.convexa_ai_backend.repository.SubscriptionRepository;
 import com.convexa.ai.convexa_ai_backend.security.CallRangeFilter;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -64,32 +71,72 @@ public class CompanyService {
     @Autowired
     private ImprovementPlanRepository improvementPlanRepository;
 
+    @Autowired
+    private DailyCompanyMetricsService dailyCompanyMetricsService;
+
+    @Autowired
+    private CompanyRepository companyRepository;
+
+    @Autowired
+    private SubscriptionRepository subscriptionRepository;
+
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     private static final DateTimeFormatter DAY_KEY = DateTimeFormatter.ofPattern("yyyy-MM-dd");
     private static final double COACHING_THRESHOLD = 65.0;
 
     public CompanyStatsResponse getCompanyStats(Long companyId, String range) {
-        List<CallRecord> allCalls = callRecordService.getCallsByCompanyId(companyId);
-        int totalCalls = allCalls.size();
+        List<CallRecord> allCompanyCalls = callRecordService.getCallsByCompanyId(companyId);
+        List<CallRecord> rangeCalls = CallRangeFilter.apply(allCompanyCalls, range);
+        int totalCalls = rangeCalls.size();
+
+        Map<Long, String> namesById = getActiveMemberNames(companyId);
+        String companySlug = companyRepository.findById(companyId).map(Company::getCompanySlug).orElse("default");
+
+        List<DailyCompanyMetricsDTO> preAggregatedSeries = dailyCompanyMetricsService.getDailyMetrics(companyId, range);
+        List<AnalyticsResponse.DailyPoint> callVolume = preAggregatedSeries.stream()
+                .map(m -> AnalyticsResponse.DailyPoint.builder()
+                        .date(m.getDate())
+                        .callCount(m.getTotalCalls())
+                        .avgScore(m.getAvgQaScore())
+                        .build())
+                .collect(Collectors.toList());
+
+        long failedCalls = rangeCalls.stream().filter(c -> "FAILED".equalsIgnoreCase(c.getStatus())).count();
+        double aiSuccessRate = totalCalls == 0 ? 100.0 : round1(((totalCalls - failedCalls) * 100.0) / totalCalls);
 
         if (totalCalls == 0) {
+            ExecutiveTeamInsightsDTO emptyInsights = ExecutiveTeamInsightsDTO.builder().build();
+            List<CompanyAlertDTO> emptyAlerts = generateCompanyAlerts(companyId, rangeCalls, 0, 0.0, 0.0, 0.0, 0, 0, List.of(), List.of(), companySlug);
+
             return CompanyStatsResponse.builder()
                     .totalCalls(0)
-                    .callVolume(List.of())
+                    .avgScore(0.0)
+                    .positivePercent(0.0)
+                    .negativePercent(0.0)
+                    .neutralPercent(0.0)
+                    .coachingNeededCount(0)
+                    .riskFlagsCount(0)
+                    .aiSuccessRate(100.0)
+                    .callVolume(callVolume)
                     .topPerformers(List.of())
                     .needsCoaching(List.of())
+                    .outcomeDistribution(Map.of())
+                    .teamInsights(emptyInsights)
+                    .alerts(emptyAlerts)
                     .build();
         }
 
-        double avgScore = allCalls.stream().mapToInt(c -> nz(c.getOverallScore())).average().orElse(0);
-        int positive = (int) allCalls.stream().filter(c -> "POSITIVE".equals(c.getSentiment())).count();
-        int negative = (int) allCalls.stream().filter(c -> "NEGATIVE".equals(c.getSentiment())).count();
-        int neutral  = (int) allCalls.stream().filter(c -> "NEUTRAL".equals(c.getSentiment())).count();
+        double avgScore = rangeCalls.stream().mapToInt(c -> nz(c.getOverallScore())).average().orElse(0);
+        int positive = (int) rangeCalls.stream().filter(c -> "POSITIVE".equalsIgnoreCase(c.getSentiment())).count();
+        int negative = (int) rangeCalls.stream().filter(c -> "NEGATIVE".equalsIgnoreCase(c.getSentiment())).count();
+        int neutral  = (int) rangeCalls.stream().filter(c -> "NEUTRAL".equalsIgnoreCase(c.getSentiment())).count();
 
-        List<AnalyticsResponse.DailyPoint> callVolume = buildDailySeries(CallRangeFilter.apply(allCalls, range));
+        double positivePercent = round1(pct(positive, totalCalls));
+        double negativePercent = round1(pct(negative, totalCalls));
+        double neutralPercent  = round1(pct(neutral, totalCalls));
 
-        List<TopPerformer> employeeStats = buildEmployeeStats(companyId, CallRangeFilter.apply(allCalls, range));
+        List<TopPerformer> employeeStats = buildEmployeeStats(companyId, rangeCalls, namesById);
 
         List<TopPerformer> topPerformers = employeeStats.stream()
                 .sorted(Comparator.comparingDouble(TopPerformer::getAvgScore).reversed())
@@ -108,37 +155,463 @@ public class CompanyService {
                         .build())
                 .collect(Collectors.toList());
 
-        Map<String, Long> outcomeDist = allCalls.stream()
+        Map<String, Long> outcomeDist = rangeCalls.stream()
                 .filter(c -> c.getOutcomeStatus() != null && !c.getOutcomeStatus().isBlank())
                 .collect(Collectors.groupingBy(CallRecord::getOutcomeStatus, Collectors.counting()));
+
+        int riskFlagsCount = calculateRiskFlagsCount(rangeCalls);
+        ExecutiveTeamInsightsDTO teamInsights = computeTeamInsights(companyId, rangeCalls, allCompanyCalls, range, namesById);
+        List<CompanyAlertDTO> companyAlerts = generateCompanyAlerts(
+                companyId, rangeCalls, totalCalls, avgScore, positivePercent, negativePercent,
+                needsCoaching.size(), riskFlagsCount, topPerformers, needsCoaching, companySlug
+        );
 
         return CompanyStatsResponse.builder()
                 .totalCalls(totalCalls)
                 .avgScore(round1(avgScore))
-                .positivePercent(round1(pct(positive, totalCalls)))
-                .negativePercent(round1(pct(negative, totalCalls)))
-                .neutralPercent(round1(pct(neutral, totalCalls)))
+                .positivePercent(positivePercent)
+                .negativePercent(negativePercent)
+                .neutralPercent(neutralPercent)
                 .coachingNeededCount(needsCoaching.size())
+                .riskFlagsCount(riskFlagsCount)
+                .aiSuccessRate(aiSuccessRate)
                 .callVolume(callVolume)
                 .topPerformers(topPerformers)
                 .needsCoaching(needsCoaching)
                 .outcomeDistribution(outcomeDist)
+                .teamInsights(teamInsights)
+                .alerts(companyAlerts)
                 .build();
     }
 
-    private List<TopPerformer> buildEmployeeStats(Long companyId, List<CallRecord> calls) {
+    public Map<Long, String> getActiveMemberNames(Long companyId) {
+        Map<Long, String> namesById = new HashMap<>();
+        try {
+            organizationMembershipRepository.findByCompanyIdAndStatus(companyId, MembershipStatus.ACTIVE).stream()
+                    .filter(m -> m.getUser() != null)
+                    .forEach(m -> {
+                        String name = m.getUser().getName() != null && !m.getUser().getName().isBlank()
+                                ? m.getUser().getName()
+                                : m.getUser().getEmail();
+                        namesById.put(m.getUser().getId(), name);
+                    });
+        } catch (Exception ignored) {}
+
+        if (namesById.isEmpty()) {
+            userRepository.findByCompanyId(companyId).forEach(u -> {
+                String name = u.getName() != null && !u.getName().isBlank() ? u.getName() : u.getEmail();
+                namesById.put(u.getId(), name);
+            });
+        }
+        return namesById;
+    }
+
+    public int calculateRiskFlagsCount(List<CallRecord> calls) {
+        if (calls == null || calls.isEmpty()) return 0;
+        int count = 0;
+        for (CallRecord c : calls) {
+            List<Map<String, String>> flags = parseRiskFlags(c.getRiskFlags());
+            if (flags != null && !flags.isEmpty()) {
+                count += flags.size();
+            } else {
+                if ((c.getOverallScore() != null && c.getOverallScore() < 65) || "Escalated".equalsIgnoreCase(c.getOutcomeStatus())) {
+                    count++;
+                }
+            }
+        }
+        return count;
+    }
+
+    public ExecutiveTeamInsightsDTO computeTeamInsights(
+            Long companyId,
+            List<CallRecord> rangeCalls,
+            List<CallRecord> allCompanyCalls,
+            String range,
+            Map<Long, String> namesById
+    ) {
+        if (rangeCalls == null || rangeCalls.isEmpty() || namesById == null || namesById.isEmpty()) {
+            return ExecutiveTeamInsightsDTO.builder().build();
+        }
+
+        Map<Long, List<CallRecord>> byEmployee = rangeCalls.stream()
+                .filter(c -> c.getUser() != null && namesById.containsKey(c.getUser().getId()))
+                .collect(Collectors.groupingBy(c -> c.getUser().getId()));
+
+        if (byEmployee.isEmpty()) {
+            return ExecutiveTeamInsightsDTO.builder().build();
+        }
+
+        List<TopPerformer> statsList = byEmployee.entrySet().stream()
+                .map(entry -> {
+                    Long empId = entry.getKey();
+                    List<CallRecord> empCalls = entry.getValue();
+                    double avg = empCalls.stream().mapToInt(c -> nz(c.getOverallScore())).average().orElse(0.0);
+                    return TopPerformer.builder()
+                            .employeeId(empId)
+                            .employeeName(namesById.get(empId))
+                            .callCount(empCalls.size())
+                            .avgScore(round1(avg))
+                            .build();
+                })
+                .sorted(Comparator.comparingDouble(TopPerformer::getAvgScore).reversed())
+                .toList();
+
+        ExecutiveTeamInsightsDTO.PerformerInsight topPerformer = null;
+        ExecutiveTeamInsightsDTO.CoachingInsight needsCoaching = null;
+
+        if (!statsList.isEmpty()) {
+            TopPerformer best = statsList.get(0);
+            topPerformer = ExecutiveTeamInsightsDTO.PerformerInsight.builder()
+                    .employeeId(best.getEmployeeId())
+                    .employeeName(best.getEmployeeName())
+                    .avgScore(best.getAvgScore())
+                    .callCount(best.getCallCount())
+                    .statusText(String.format("%.1f QA Avg · %d Calls", best.getAvgScore(), best.getCallCount()))
+                    .build();
+
+            TopPerformer lowest = statsList.get(statsList.size() - 1);
+            String weakness = primaryWeaknessFor(companyId, lowest.getEmployeeId(), range);
+            if (weakness == null || weakness.isBlank()) weakness = "Objection Handling";
+
+            needsCoaching = ExecutiveTeamInsightsDTO.CoachingInsight.builder()
+                    .employeeId(lowest.getEmployeeId())
+                    .employeeName(lowest.getEmployeeName())
+                    .avgScore(lowest.getAvgScore())
+                    .callCount(lowest.getCallCount())
+                    .primaryWeakness(weakness)
+                    .statusText("Focus: " + weakness)
+                    .build();
+        }
+
+        // Highest Volume
+        ExecutiveTeamInsightsDTO.VolumeInsight highestVolume = null;
+        TopPerformer maxVol = statsList.stream().max(Comparator.comparingInt(TopPerformer::getCallCount)).orElse(null);
+        if (maxVol != null) {
+            highestVolume = ExecutiveTeamInsightsDTO.VolumeInsight.builder()
+                    .employeeId(maxVol.getEmployeeId())
+                    .employeeName(maxVol.getEmployeeName())
+                    .callCount(maxVol.getCallCount())
+                    .statusText(maxVol.getCallCount() + " Conversations Analysed")
+                    .build();
+        }
+
+        // Best QA Score (single call)
+        ExecutiveTeamInsightsDTO.BestQaInsight bestQA = null;
+        CallRecord bestCall = rangeCalls.stream()
+                .filter(c -> c.getOverallScore() != null && c.getUser() != null && namesById.containsKey(c.getUser().getId()))
+                .max(Comparator.comparingInt(CallRecord::getOverallScore))
+                .orElse(null);
+        if (bestCall != null) {
+            bestQA = ExecutiveTeamInsightsDTO.BestQaInsight.builder()
+                    .employeeId(bestCall.getUser().getId())
+                    .employeeName(namesById.get(bestCall.getUser().getId()))
+                    .score((double) bestCall.getOverallScore())
+                    .callTitle(bestCall.getFileName() != null ? bestCall.getFileName() : "Customer Call")
+                    .statusText(bestCall.getOverallScore() + " / 100 Top Score")
+                    .build();
+        }
+
+        // Highest Positive Sentiment
+        ExecutiveTeamInsightsDTO.SentimentInsight highestSentiment = null;
+        double maxPosPct = -1.0;
+        for (Map.Entry<Long, List<CallRecord>> entry : byEmployee.entrySet()) {
+            List<CallRecord> empCalls = entry.getValue();
+            long posCount = empCalls.stream().filter(c -> "POSITIVE".equalsIgnoreCase(c.getSentiment())).count();
+            double posRatio = empCalls.isEmpty() ? 0.0 : (posCount * 100.0) / empCalls.size();
+            if (posRatio > maxPosPct) {
+                maxPosPct = posRatio;
+                highestSentiment = ExecutiveTeamInsightsDTO.SentimentInsight.builder()
+                        .employeeId(entry.getKey())
+                        .employeeName(namesById.get(entry.getKey()))
+                        .positiveRatio(round1(posRatio))
+                        .callCount(empCalls.size())
+                        .statusText(String.format("%.0f%% Positive Ratio", posRatio))
+                        .build();
+            }
+        }
+
+        // Most Improved (Comparison between current range and prior equivalent period)
+        ExecutiveTeamInsightsDTO.ImprovedInsight mostImproved = computeMostImproved(rangeCalls, allCompanyCalls, range, namesById);
+
+        return ExecutiveTeamInsightsDTO.builder()
+                .topPerformer(topPerformer)
+                .needsCoaching(needsCoaching)
+                .mostImproved(mostImproved)
+                .highestVolume(highestVolume)
+                .bestQA(bestQA)
+                .highestSentiment(highestSentiment)
+                .build();
+    }
+
+    private ExecutiveTeamInsightsDTO.ImprovedInsight computeMostImproved(
+            List<CallRecord> rangeCalls,
+            List<CallRecord> allCompanyCalls,
+            String range,
+            Map<Long, String> namesById
+    ) {
+        if (allCompanyCalls == null || allCompanyCalls.isEmpty()) return null;
+
+        int days = switch (range != null ? range.toLowerCase() : "30d") {
+            case "7d" -> 7;
+            case "30d" -> 30;
+            case "90d" -> 90;
+            default -> 30;
+        };
+
+        LocalDateTime now = LocalDateTime.now();
+        LocalDateTime currentStart = now.minusDays(days);
+        LocalDateTime priorStart = now.minusDays(days * 2L);
+
+        List<CallRecord> currentCalls = allCompanyCalls.stream()
+                .filter(c -> c.getCreatedAt() != null && !c.getCreatedAt().isBefore(currentStart))
+                .toList();
+
+        List<CallRecord> priorCalls = allCompanyCalls.stream()
+                .filter(c -> c.getCreatedAt() != null && c.getCreatedAt().isBefore(currentStart) && !c.getCreatedAt().isBefore(priorStart))
+                .toList();
+
+        Map<Long, List<CallRecord>> currentByEmp = currentCalls.stream()
+                .filter(c -> c.getUser() != null && namesById.containsKey(c.getUser().getId()))
+                .collect(Collectors.groupingBy(c -> c.getUser().getId()));
+
+        Map<Long, List<CallRecord>> priorByEmp = priorCalls.stream()
+                .filter(c -> c.getUser() != null && namesById.containsKey(c.getUser().getId()))
+                .collect(Collectors.groupingBy(c -> c.getUser().getId()));
+
+        Long bestEmpId = null;
+        double maxDelta = -999.0;
+        double bestCurScore = 0.0;
+        double bestPrevScore = 0.0;
+
+        for (Map.Entry<Long, List<CallRecord>> entry : currentByEmp.entrySet()) {
+            Long empId = entry.getKey();
+            List<CallRecord> curList = entry.getValue();
+            List<CallRecord> prevList = priorByEmp.get(empId);
+
+            if (curList.isEmpty()) continue;
+
+            double curAvg = curList.stream().mapToInt(c -> nz(c.getOverallScore())).average().orElse(0.0);
+
+            if (prevList != null && !prevList.isEmpty()) {
+                double prevAvg = prevList.stream().mapToInt(c -> nz(c.getOverallScore())).average().orElse(0.0);
+                double delta = curAvg - prevAvg;
+                if (delta > maxDelta) {
+                    maxDelta = delta;
+                    bestEmpId = empId;
+                    bestCurScore = curAvg;
+                    bestPrevScore = prevAvg;
+                }
+            } else if (curList.size() >= 2) {
+                // Split employee calls into 1st half vs 2nd half
+                List<CallRecord> sorted = curList.stream().sorted(Comparator.comparing(CallRecord::getCreatedAt)).toList();
+                int mid = sorted.size() / 2;
+                double firstHalf = sorted.subList(0, mid).stream().mapToInt(c -> nz(c.getOverallScore())).average().orElse(0.0);
+                double secondHalf = sorted.subList(mid, sorted.size()).stream().mapToInt(c -> nz(c.getOverallScore())).average().orElse(0.0);
+                double delta = secondHalf - firstHalf;
+                if (delta > maxDelta) {
+                    maxDelta = delta;
+                    bestEmpId = empId;
+                    bestCurScore = secondHalf;
+                    bestPrevScore = firstHalf;
+                }
+            }
+        }
+
+        if (bestEmpId != null && maxDelta > 0) {
+            double pct = bestPrevScore > 0 ? ((maxDelta) / bestPrevScore) * 100.0 : maxDelta;
+            return ExecutiveTeamInsightsDTO.ImprovedInsight.builder()
+                    .employeeId(bestEmpId)
+                    .employeeName(namesById.get(bestEmpId))
+                    .deltaScore(round1(maxDelta))
+                    .currentScore(round1(bestCurScore))
+                    .previousScore(round1(bestPrevScore))
+                    .deltaPercent(String.format("+%.1f%%", pct))
+                    .statusText(String.format("+%.1f%% Score Increase", pct))
+                    .build();
+        }
+
+        return null;
+    }
+
+    public List<CompanyAlertDTO> generateCompanyAlerts(
+            Long companyId,
+            List<CallRecord> rangeCalls,
+            int totalCalls,
+            double avgScore,
+            double posPct,
+            double negPct,
+            int coachingNeededCount,
+            int riskFlagsCount,
+            List<TopPerformer> topPerformers,
+            List<NeedsCoachingItem> needsCoaching,
+            String companySlug
+    ) {
+        List<CompanyAlertDTO> alerts = new ArrayList<>();
+        String slug = (companySlug != null && !companySlug.isBlank()) ? companySlug : "default";
+
+        // 1. Critical QA Alert: Drop below threshold or call with QA < 60
+        if (needsCoaching != null && !needsCoaching.isEmpty()) {
+            NeedsCoachingItem rep = needsCoaching.get(0);
+            alerts.add(CompanyAlertDTO.builder()
+                    .id("ALERT_QA_DROP")
+                    .category("CRITICAL")
+                    .severity("critical")
+                    .title("QA Score Dropped Below Threshold")
+                    .description(String.format("%s averaged %.1f on recent conversations. Focus: %s.",
+                            rep.getEmployeeName(), rep.getAvgScore(), rep.getPrimaryWeakness() != null ? rep.getPrimaryWeakness() : "Objection Handling"))
+                    .timeAgo("Active")
+                    .timestamp(LocalDateTime.now().minusMinutes(25).toString())
+                    .actionLabel("Review Rep")
+                    .link("/w/" + slug + "/company/employee/" + rep.getEmployeeId())
+                    .entityType("REP")
+                    .entityId(rep.getEmployeeId())
+                    .build());
+        }
+
+        // 2. High Risk / Escalation Alert: Calls with high risk flags or Escalated status
+        CallRecord escalatedOrRiskCall = rangeCalls.stream()
+                .filter(c -> "Escalated".equalsIgnoreCase(c.getOutcomeStatus()) ||
+                        (c.getRiskFlags() != null && c.getRiskFlags().toLowerCase().contains("high")))
+                .findFirst()
+                .orElse(null);
+        if (escalatedOrRiskCall != null) {
+            String callTitle = escalatedOrRiskCall.getFileName() != null ? escalatedOrRiskCall.getFileName() : "Customer Call";
+            alerts.add(CompanyAlertDTO.builder()
+                    .id("ALERT_RISK_CALL_" + escalatedOrRiskCall.getId())
+                    .category("CRITICAL")
+                    .severity("critical")
+                    .title("High-Risk Conversation Detected")
+                    .description(String.format("Critical risk flag or customer escalation detected on '%s' (Score: %d).",
+                            callTitle, escalatedOrRiskCall.getOverallScore() != null ? escalatedOrRiskCall.getOverallScore() : 0))
+                    .timeAgo(formatTimeAgo(escalatedOrRiskCall.getCreatedAt()))
+                    .timestamp(escalatedOrRiskCall.getCreatedAt() != null ? escalatedOrRiskCall.getCreatedAt().toString() : LocalDateTime.now().toString())
+                    .actionLabel("Review Call")
+                    .link("/w/" + slug + "/history")
+                    .entityType("CALL")
+                    .entityId(escalatedOrRiskCall.getId())
+                    .build());
+        }
+
+        // 3. Pricing & Objection Concentration Alert
+        long objectionCalls = rangeCalls.stream()
+                .filter(c -> {
+                    String obj = c.getObjections() != null ? c.getObjections().toLowerCase() : "";
+                    String imp = c.getImprovements() != null ? c.getImprovements().toLowerCase() : "";
+                    return obj.contains("pricing") || obj.contains("budget") || obj.contains("cost") || obj.contains("expensive") ||
+                            imp.contains("pricing") || imp.contains("objection");
+                })
+                .count();
+        if (objectionCalls > 0 && totalCalls > 0) {
+            double objectionPct = round1((objectionCalls * 100.0) / totalCalls);
+            alerts.add(CompanyAlertDTO.builder()
+                    .id("ALERT_OBJECTION_SPIKE")
+                    .category("WARNING")
+                    .severity("warning")
+                    .title("Pricing & Budget Objection Concentration")
+                    .description(String.format("Pricing and budget objections detected in %d call%s (%.0f%% of conversations this period).",
+                            objectionCalls, objectionCalls > 1 ? "s" : "", objectionPct))
+                    .timeAgo("Active")
+                    .timestamp(LocalDateTime.now().minusHours(4).toString())
+                    .actionLabel("View Insights")
+                    .link("/w/" + slug + "/insights")
+                    .entityType("WORKSPACE")
+                    .build());
+        }
+
+        // 4. Negative Sentiment Alert
+        if (negPct >= 15.0 || rangeCalls.stream().filter(c -> "NEGATIVE".equalsIgnoreCase(c.getSentiment())).count() >= 2) {
+            long negCount = rangeCalls.stream().filter(c -> "NEGATIVE".equalsIgnoreCase(c.getSentiment())).count();
+            alerts.add(CompanyAlertDTO.builder()
+                    .id("ALERT_SENTIMENT_SPIKE")
+                    .category("WARNING")
+                    .severity("warning")
+                    .title("Negative Customer Sentiment Alert")
+                    .description(String.format("%.1f%% of calls (%d conversation%s) expressed negative customer sentiment in this window.",
+                            negPct, negCount, negCount > 1 ? "s" : ""))
+                    .timeAgo("Active")
+                    .timestamp(LocalDateTime.now().minusHours(6).toString())
+                    .actionLabel("Check Calls")
+                    .link("/w/" + slug + "/history")
+                    .entityType("WORKSPACE")
+                    .build());
+        }
+
+        // 5. Seat Capacity Alert
+        try {
+            var subOpt = subscriptionRepository.findByCompanyId(companyId);
+            if (subOpt.isPresent()) {
+                var sub = subOpt.get();
+                int limit = sub.getSeatLimit() != null ? sub.getSeatLimit() : 25;
+                int current = sub.getCurrentSeatCount() != null ? sub.getCurrentSeatCount() : 1;
+                int seatPct = Math.min(100, Math.round((current * 100.0f) / limit));
+                if (seatPct >= 80) {
+                    alerts.add(CompanyAlertDTO.builder()
+                            .id("ALERT_SEAT_CAPACITY")
+                            .category("WARNING")
+                            .severity(seatPct >= 95 ? "critical" : "warning")
+                            .title(String.format("Seat Capacity Reached %d%%", seatPct))
+                            .description(String.format("%d of %d workspace seats currently assigned. Expand capacity for new members.", current, limit))
+                            .timeAgo("Active")
+                            .timestamp(LocalDateTime.now().toString())
+                            .actionLabel("Manage Seats")
+                            .link("/w/" + slug + "/company")
+                            .entityType("WORKSPACE")
+                            .build());
+                }
+            }
+        } catch (Exception ignored) {}
+
+        // 6. System & AI Pipeline Status Alert
+        long failedCalls = rangeCalls.stream().filter(c -> "FAILED".equalsIgnoreCase(c.getStatus())).count();
+        if (failedCalls > 0) {
+            alerts.add(CompanyAlertDTO.builder()
+                    .id("ALERT_PIPELINE_FAILURES")
+                    .category("CRITICAL")
+                    .severity("critical")
+                    .title("AI Pipeline Processing Alert")
+                    .description(String.format("%d call recording%s encountered transcription/processing errors.",
+                            failedCalls, failedCalls > 1 ? "s" : ""))
+                    .timeAgo("Recent")
+                    .timestamp(LocalDateTime.now().toString())
+                    .actionLabel("Check Status")
+                    .link("/w/" + slug + "/history")
+                    .entityType("WORKSPACE")
+                    .build());
+        } else if (totalCalls > 0) {
+            alerts.add(CompanyAlertDTO.builder()
+                    .id("ALERT_PIPELINE_HEALTHY")
+                    .category("SYSTEM")
+                    .severity("system")
+                    .title("AI Processing Pipeline Healthy")
+                    .description(String.format("100%% of %d call recording%s transcribed and scored without latency.",
+                            totalCalls, totalCalls > 1 ? "s" : ""))
+                    .timeAgo("Operational")
+                    .timestamp(LocalDateTime.now().toString())
+                    .actionLabel("System Status")
+                    .link("/w/" + slug + "/company/settings")
+                    .entityType("WORKSPACE")
+                    .build());
+        }
+
+        return alerts;
+    }
+
+    private String formatTimeAgo(LocalDateTime dt) {
+        if (dt == null) return "Recently";
+        long mins = java.time.Duration.between(dt, LocalDateTime.now()).toMinutes();
+        if (mins < 60) return Math.max(1, mins) + " mins ago";
+        long hours = mins / 60;
+        if (hours < 24) return hours + (hours == 1 ? " hour ago" : " hours ago");
+        long days = hours / 24;
+        return days + (days == 1 ? " day ago" : " days ago");
+    }
+
+    private List<TopPerformer> buildEmployeeStats(Long companyId, List<CallRecord> calls, Map<Long, String> namesById) {
         Map<Long, List<CallRecord>> byEmployee = calls.stream()
                 .filter(c -> c.getUser() != null)
                 .collect(Collectors.groupingBy(c -> c.getUser().getId()));
 
-        if (byEmployee.isEmpty()) return List.of();
-
-        Map<Long, String> namesById = organizationMembershipRepository.findByCompanyIdAndStatus(companyId, MembershipStatus.ACTIVE).stream()
-                .collect(Collectors.toMap(
-                    m -> m.getUser().getId(),
-                    m -> m.getUser().getName() != null && !m.getUser().getName().isBlank() ? m.getUser().getName() : m.getUser().getEmail(),
-                    (existing, replacement) -> existing
-                ));
+        if (byEmployee.isEmpty() || namesById == null || namesById.isEmpty()) return List.of();
 
         return byEmployee.entrySet().stream()
                 .filter(entry -> namesById.containsKey(entry.getKey()))
