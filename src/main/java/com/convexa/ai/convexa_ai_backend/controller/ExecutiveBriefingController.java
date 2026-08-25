@@ -23,12 +23,13 @@ public class ExecutiveBriefingController {
 
     @GetMapping("/executive-briefing")
     public ResponseEntity<ExecutiveBriefingResponse> getExecutiveBriefing(
+            @RequestParam(value = "range", required = false, defaultValue = "30d") String range,
             @AuthenticationPrincipal WorkspacePrincipal principal
     ) {
         if (principal == null || principal.getCompanyId() == null) {
             return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
         }
-        ExecutiveBriefingResponse response = executiveBriefingService.getExecutiveBriefing(principal.getCompanyId());
+        ExecutiveBriefingResponse response = executiveBriefingService.getExecutiveBriefing(principal.getCompanyId(), range);
         return ResponseEntity.ok(response);
     }
 }

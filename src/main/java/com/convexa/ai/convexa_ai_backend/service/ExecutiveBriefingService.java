@@ -47,7 +47,7 @@ public class ExecutiveBriefingService {
     @Value("${groq.api.model:llama-3.3-70b-versatile}")
     private String groqModel;
 
-    private final Map<Long, CachedBriefing> cache = new ConcurrentHashMap<>();
+    private final Map<String, CachedBriefing> cache = new ConcurrentHashMap<>();
     private final ObjectMapper objectMapper = new ObjectMapper();
     private final RestTemplate restTemplate = new RestTemplate();
 
@@ -62,12 +62,18 @@ public class ExecutiveBriefingService {
     }
 
     public ExecutiveBriefingResponse getExecutiveBriefing(Long companyId) {
+        return getExecutiveBriefing(companyId, "30d");
+    }
+
+    public ExecutiveBriefingResponse getExecutiveBriefing(Long companyId, String range) {
+        String normalizedRange = (range != null && !range.isBlank()) ? range.toLowerCase().trim() : "30d";
+        String cacheKey = companyId + ":" + normalizedRange;
         long now = System.currentTimeMillis();
 
         // 1. Check Cache
-        CachedBriefing cached = cache.get(companyId);
+        CachedBriefing cached = cache.get(cacheKey);
         if (cached != null && (now - cached.timestamp) < CACHE_DURATION_MS) {
-            log.info("Returning cached Executive Briefing for companyId: {}", companyId);
+            log.info("Returning cached Executive Briefing for cacheKey: {}", cacheKey);
             return ExecutiveBriefingResponse.builder()
                     .summary(cached.response.getSummary())
                     .findings(cached.response.getFindings())
@@ -77,20 +83,20 @@ public class ExecutiveBriefingService {
                     .build();
         }
 
-        // 2. Fetch analytics payload
-        CompanyStatsResponse stats7d = companyService.getCompanyStats(companyId, "7d");
-        CompanyStatsResponse stats30d = companyService.getCompanyStats(companyId, "30d");
+        // 2. Fetch analytics payload for current selected range and baseline
+        CompanyStatsResponse currentStats = companyService.getCompanyStats(companyId, normalizedRange);
+        CompanyStatsResponse baselineStats = companyService.getCompanyStats(companyId, "30d");
         List<CallRecord> allCalls = callRecordService.getCallsByCompanyId(companyId);
         int activeSeatCount = (int) userRepository.countByCompanyId(companyId);
 
         // 3. Groq API Call with McKinsey / Chief of Staff persona
         if (groqApiKey == null || groqApiKey.isBlank()) {
-            log.info("groq.api.key (GROQ_API_KEY) is not set; returning server-generated analytical briefing for companyId: {}", companyId);
-            return buildFallbackBriefing(stats7d, stats30d);
+            log.info("groq.api.key is not set; returning server-generated analytical briefing for companyId: {}, range: {}", companyId, normalizedRange);
+            return buildFallbackBriefing(currentStats, normalizedRange);
         }
 
         try {
-            Map<String, Object> payload = buildRichAnalyticsPayload(companyId, stats7d, stats30d, allCalls, activeSeatCount);
+            Map<String, Object> payload = buildRichAnalyticsPayload(companyId, currentStats, baselineStats, allCalls, activeSeatCount, normalizedRange);
             String payloadJson = objectMapper.writeValueAsString(payload);
 
             String systemPrompt = "You are the Chief of Staff for the CEO of a SaaS company preparing a board briefing.\n" +
@@ -163,7 +169,7 @@ public class ExecutiveBriefingService {
 
                 String summary = cleanText(briefingJson.path("summary").asText(""));
                 if (summary.isBlank()) {
-                    summary = buildDefaultSummary(stats7d);
+                    summary = buildDefaultSummary(currentStats);
                 }
 
                 List<ExecutiveBriefingResponse.FindingItem> findings = new ArrayList<>();
@@ -180,7 +186,7 @@ public class ExecutiveBriefingService {
                 }
 
                 if (findings.isEmpty()) {
-                    findings = buildDefaultFindings(stats7d);
+                    findings = buildDefaultFindings(currentStats);
                 }
 
                 JsonNode recNode = briefingJson.path("recommendation");
@@ -209,8 +215,8 @@ public class ExecutiveBriefingService {
                         .isCached(false)
                         .build();
 
-                cache.put(companyId, new CachedBriefing(response, now));
-                log.info("Successfully generated single-panel Board Executive Briefing via Groq for companyId: {}", companyId);
+                cache.put(cacheKey, new CachedBriefing(response, now));
+                log.info("Successfully generated single-panel Board Executive Briefing via Groq for cacheKey: {}", cacheKey);
                 return response;
             } else {
                 throw new RuntimeException("Non-success response from Groq API: " + responseEntity.getStatusCode());
@@ -218,38 +224,40 @@ public class ExecutiveBriefingService {
 
         } catch (Exception e) {
             log.error("Failed to generate Executive Briefing from Groq for companyId: {}. Error: {}", companyId, e.getMessage(), e);
-            return buildFallbackBriefing(stats7d, stats30d);
+            return buildFallbackBriefing(currentStats, normalizedRange);
         }
     }
 
     private Map<String, Object> buildRichAnalyticsPayload(
             Long companyId,
-            CompanyStatsResponse stats7d,
-            CompanyStatsResponse stats30d,
+            CompanyStatsResponse currentStats,
+            CompanyStatsResponse baselineStats,
             List<CallRecord> allCalls,
-            int activeSeats
+            int activeSeats,
+            String range
     ) {
         Map<String, Object> payload = new LinkedHashMap<>();
-        payload.put("period", "Last 7 Days");
-        payload.put("totalCalls", stats7d.getTotalCalls());
+        String periodLabel = "7d".equals(range) ? "Last 7 Days" : "all".equals(range) ? "All Time" : "Last 30 Days";
+        payload.put("period", periodLabel);
+        payload.put("totalCalls", currentStats.getTotalCalls());
 
-        int total30d = stats30d.getTotalCalls();
-        double prevAvgCallsPerWeek = total30d > 0 ? (total30d - stats7d.getTotalCalls()) / 3.0 : stats7d.getTotalCalls();
-        double volChangePct = prevAvgCallsPerWeek > 0 ? ((stats7d.getTotalCalls() - prevAvgCallsPerWeek) / prevAvgCallsPerWeek) * 100.0 : 0.0;
+        int totalBaseline = baselineStats.getTotalCalls();
+        double prevAvgCallsPerWeek = totalBaseline > 0 ? (totalBaseline - currentStats.getTotalCalls()) / 3.0 : currentStats.getTotalCalls();
+        double volChangePct = prevAvgCallsPerWeek > 0 ? ((currentStats.getTotalCalls() - prevAvgCallsPerWeek) / prevAvgCallsPerWeek) * 100.0 : 0.0;
         payload.put("callVolumeChange", String.format("%s%.1f%%", volChangePct >= 0 ? "+" : "", volChangePct));
 
-        double currentQa = stats7d.getAvgScore();
-        double prevQa = stats30d.getAvgScore() > 0 ? stats30d.getAvgScore() : Math.max(50.0, currentQa - 3.5);
+        double currentQa = currentStats.getAvgScore();
+        double prevQa = baselineStats.getAvgScore() > 0 ? baselineStats.getAvgScore() : Math.max(50.0, currentQa - 3.5);
         payload.put("avgQaScore", round1(currentQa));
         payload.put("avgQaPrevious", round1(prevQa));
 
-        double posCur = stats7d.getPositivePercent();
-        double posPrev = stats30d.getPositivePercent() > 0 ? stats30d.getPositivePercent() : Math.max(40.0, posCur - 5.0);
+        double posCur = currentStats.getPositivePercent();
+        double posPrev = baselineStats.getPositivePercent() > 0 ? baselineStats.getPositivePercent() : Math.max(40.0, posCur - 5.0);
         payload.put("positivePercent", round1(posCur));
         payload.put("positivePrevious", round1(posPrev));
-        payload.put("negativePercent", round1(stats7d.getNegativePercent()));
+        payload.put("negativePercent", round1(currentStats.getNegativePercent()));
 
-        payload.put("coachingNeeded", stats7d.getCoachingNeededCount());
+        payload.put("coachingNeeded", currentStats.getCoachingNeededCount());
 
         List<Map<String, Object>> riskCalls = allCalls.stream()
                 .filter(c -> c.getOverallScore() != null && c.getOverallScore() < 65)
@@ -265,21 +273,21 @@ public class ExecutiveBriefingService {
                 .collect(Collectors.toList());
         payload.put("riskCalls", riskCalls);
 
-        if (stats7d.getTopPerformers() != null && !stats7d.getTopPerformers().isEmpty()) {
-            CompanyStatsResponse.TopPerformer top = stats7d.getTopPerformers().get(0);
+        if (currentStats.getTopPerformers() != null && !currentStats.getTopPerformers().isEmpty()) {
+            CompanyStatsResponse.TopPerformer top = currentStats.getTopPerformers().get(0);
             payload.put("topPerformer", Map.of("name", top.getEmployeeName(), "score", round1(top.getAvgScore())));
         } else {
             payload.put("topPerformer", Map.of("name", "N/A", "score", 0.0));
         }
 
-        if (stats7d.getNeedsCoaching() != null && !stats7d.getNeedsCoaching().isEmpty()) {
-            CompanyStatsResponse.NeedsCoachingItem lowest = stats7d.getNeedsCoaching().get(0);
+        if (currentStats.getNeedsCoaching() != null && !currentStats.getNeedsCoaching().isEmpty()) {
+            CompanyStatsResponse.NeedsCoachingItem lowest = currentStats.getNeedsCoaching().get(0);
             payload.put("lowestPerformer", Map.of("name", lowest.getEmployeeName(), "score", round1(lowest.getAvgScore())));
         } else {
             payload.put("lowestPerformer", Map.of("name", "N/A", "score", 0.0));
         }
 
-        List<String> topWeaknesses = stats7d.getNeedsCoaching() != null ? stats7d.getNeedsCoaching().stream()
+        List<String> topWeaknesses = currentStats.getNeedsCoaching() != null ? currentStats.getNeedsCoaching().stream()
                 .map(CompanyStatsResponse.NeedsCoachingItem::getPrimaryWeakness)
                 .filter(Objects::nonNull)
                 .distinct()
@@ -300,29 +308,35 @@ public class ExecutiveBriefingService {
         return payload;
     }
 
-    private ExecutiveBriefingResponse buildFallbackBriefing(CompanyStatsResponse stats7d, CompanyStatsResponse stats30d) {
-        double currentQa = stats7d != null ? stats7d.getAvgScore() : 92.3;
-        int totalCalls = stats7d != null ? stats7d.getTotalCalls() : 38;
-        int coachCount = stats7d != null ? stats7d.getCoachingNeededCount() : 0;
-        double posPct = stats7d != null ? stats7d.getPositivePercent() : 72.0;
+    private ExecutiveBriefingResponse buildFallbackBriefing(CompanyStatsResponse stats, String range) {
+        double currentQa = stats != null ? stats.getAvgScore() : 92.3;
+        int totalCalls = stats != null ? stats.getTotalCalls() : 0;
+        int coachCount = stats != null ? stats.getCoachingNeededCount() : 0;
+        double posPct = stats != null ? stats.getPositivePercent() : 0.0;
+        String periodPhrase = "7d".equals(range) ? "this week" : "all".equals(range) ? "across all historical conversations" : "over the last 30 days";
 
-        String summary = String.format(
-                "Sales quality remained stable this week with an average QA score of %.1f across %d analyzed conversations. Customer sentiment remained positive at %.1f percent while pricing objections continued to be the primary coaching opportunity. %s Overall organizational performance remains healthy, although pricing conversations should be monitored before the next sales sprint.",
-                currentQa, totalCalls, posPct, coachCount == 0 ? "No high-risk representatives were detected." : coachCount + " representatives were flagged for coaching review."
-        );
+        String summary;
+        if (totalCalls == 0) {
+            summary = String.format("No customer conversations were recorded %s. Call ingestion and real-time AI quality scoring pipelines remain fully operational.", periodPhrase);
+        } else {
+            summary = String.format(
+                    "Sales quality remained stable %s with an average QA score of %.1f across %d analyzed conversations. Customer sentiment remained positive at %.1f percent while objection handling and pricing clarity continue to be the primary coaching focus. %s Overall organizational performance remains healthy.",
+                    periodPhrase, currentQa, totalCalls, posPct, coachCount == 0 ? "No high-risk representatives were detected." : coachCount + " representatives were flagged for coaching review."
+            );
+        }
 
         List<ExecutiveBriefingResponse.FindingItem> findings = List.of(
                 ExecutiveBriefingResponse.FindingItem.builder()
                         .status("POSITIVE")
                         .title("QA Score Stability")
-                        .detail("Call quality remained strong despite consistent weekly conversation volume.")
+                        .detail(totalCalls > 0 ? String.format("Call quality remained strong across %d analyzed customer conversations.", totalCalls) : "Quality scoring engine is active.")
                         .metric(String.format("QA %.1f", currentQa))
                         .build(),
                 ExecutiveBriefingResponse.FindingItem.builder()
                         .status("WARNING")
                         .title("Pricing Objection Concentration")
-                        .detail("Pricing objections appeared in mid-market and enterprise customer calls.")
-                        .metric("41% of Calls")
+                        .detail("Pricing and budget objections appeared in mid-market and enterprise customer calls.")
+                        .metric("Objection Focus")
                         .build(),
                 ExecutiveBriefingResponse.FindingItem.builder()
                         .status("POSITIVE")
@@ -352,8 +366,8 @@ public class ExecutiveBriefingService {
 
     private String buildDefaultSummary(CompanyStatsResponse stats) {
         double currentQa = stats != null ? stats.getAvgScore() : 92.3;
-        int totalCalls = stats != null ? stats.getTotalCalls() : 38;
-        return String.format("Sales quality remained stable this week with an average QA score of %.1f across %d analyzed conversations. Customer sentiment remained positive while pricing objections continued to be the primary coaching opportunity. Overall organizational performance remains healthy.", currentQa, totalCalls);
+        int totalCalls = stats != null ? stats.getTotalCalls() : 0;
+        return String.format("Sales quality remained stable with an average QA score of %.1f across %d analyzed conversations. Customer sentiment remained positive while pricing objections continued to be the primary coaching opportunity. Overall organizational performance remains healthy.", currentQa, totalCalls);
     }
 
     private List<ExecutiveBriefingResponse.FindingItem> buildDefaultFindings(CompanyStatsResponse stats) {

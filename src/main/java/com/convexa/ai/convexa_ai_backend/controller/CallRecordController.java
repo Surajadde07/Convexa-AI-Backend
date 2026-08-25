@@ -53,6 +53,9 @@ public class CallRecordController {
     @Autowired
     private com.convexa.ai.convexa_ai_backend.service.DailyCompanyMetricsService dailyCompanyMetricsService;
 
+    @Autowired
+    private com.convexa.ai.convexa_ai_backend.service.NotificationService notificationService;
+
     // ── Cloudinary service — constructor injection per Spring Boot best practice ──
     private final CloudinaryService cloudinaryService;
 
@@ -359,6 +362,20 @@ public class CallRecordController {
                 // Non-blocking log
                 org.slf4j.LoggerFactory.getLogger(CallRecordController.class)
                         .error("Failed to update daily company metrics: {}", ex.getMessage());
+            }
+
+            // ===============================
+            // ACTIONABLE WORKSPACE NOTIFICATION
+            // ===============================
+            try {
+                notificationService.createCallAnalysisCompletedNotification(company, user, callRecord);
+                if ((callRecord.getOverallScore() != null && callRecord.getOverallScore() < 50) ||
+                        (analyze.getRiskFlags() != null && !analyze.getRiskFlags().isEmpty())) {
+                    notificationService.createHighRiskDetectedNotification(company, user, callRecord, null);
+                }
+            } catch (Exception notifEx) {
+                org.slf4j.LoggerFactory.getLogger(CallRecordController.class)
+                        .warn("Failed to create call completion notification: {}", notifEx.getMessage());
             }
 
             // ===============================

@@ -16,9 +16,11 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
+import java.util.List;
 import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.*;
+
 
 @SpringBootTest
 @Transactional
@@ -437,4 +439,115 @@ class DealServiceTest {
             dealService.saveOrUpdateDealForCall(callA1.getId(), reqNullStage, principalA);
         });
     }
+
+    @Test
+    void test16_UpdateRevenueTarget() {
+        com.convexa.ai.convexa_ai_backend.dto.RevenueTargetRequest req = com.convexa.ai.convexa_ai_backend.dto.RevenueTargetRequest.builder()
+                .target(new BigDecimal("250000.00"))
+                .period("QUARTERLY")
+                .build();
+
+        Company updated = dealService.updateRevenueTarget(req, principalA);
+
+        assertEquals(new BigDecimal("250000.00"), updated.getQuarterlyRevenueTarget());
+        assertEquals("QUARTERLY", updated.getRevenueTargetPeriod());
+    }
+
+    @Test
+    void test17_NonOwnerCannotUpdateRevenueTarget() {
+        User regularUser = User.builder()
+                .email("user.a@" + System.currentTimeMillis() + ".test")
+                .name("Regular User")
+                .password("Password@123")
+                .role(Role.USER)
+                .company(companyA)
+                .build();
+        regularUser = userRepository.save(regularUser);
+
+        WorkspacePrincipal userPrincipal = WorkspacePrincipal.builder()
+                .userId(regularUser.getId())
+                .companyId(companyA.getId())
+                .role(Role.USER)
+                .email(regularUser.getEmail())
+                .build();
+
+        com.convexa.ai.convexa_ai_backend.dto.RevenueTargetRequest req = com.convexa.ai.convexa_ai_backend.dto.RevenueTargetRequest.builder()
+                .target(new BigDecimal("100000.00"))
+                .period("MONTHLY")
+                .build();
+
+        assertThrows(RuntimeException.class, () -> {
+            dealService.updateRevenueTarget(req, userPrincipal);
+        });
+    }
+
+    @Test
+    void test18_PipelineIntelligenceExcludesClosedFromActiveStages() {
+        // Create an open Discovery deal
+        DealRequest openReq = DealRequest.builder()
+                .dealValue(new BigDecimal("50000.00"))
+                .dealStatus(DealStatus.OPEN)
+                .dealStage(DealStage.DISCOVERY)
+                .build();
+        dealService.saveOrUpdateDealForCall(callA1.getId(), openReq, principalA);
+
+        // Create a Won Closed deal
+        DealRequest wonReq = DealRequest.builder()
+                .dealValue(new BigDecimal("25000.00"))
+                .dealStatus(DealStatus.WON)
+                .dealStage(DealStage.CLOSED)
+                .build();
+        dealService.saveOrUpdateDealForCall(callA2.getId(), wonReq, principalA);
+
+        com.convexa.ai.convexa_ai_backend.dto.PipelineIntelligenceResponse intel =
+                dealService.getPipelineIntelligence(principalA, "all");
+
+        assertEquals(new BigDecimal("50000.00"), intel.getTotalOpenValue());
+        assertEquals(1, intel.getTotalOpenDeals());
+        assertEquals(new BigDecimal("25000.00"), intel.getTotalWonValue());
+
+        // Verify active stage breakdown only has Discovery, Demo, Proposal, Negotiation
+        List<String> stages = intel.getStageBreakdown().stream()
+                .map(com.convexa.ai.convexa_ai_backend.dto.PipelineIntelligenceResponse.StageBreakdown::getStage)
+                .toList();
+
+        assertTrue(stages.contains("DISCOVERY"));
+        assertTrue(stages.contains("DEMO"));
+        assertTrue(stages.contains("PROPOSAL"));
+        assertTrue(stages.contains("NEGOTIATION"));
+        assertFalse(stages.contains("CLOSED")); // Closed is excluded from active pipeline stages
+    }
+
+    @Test
+    void test19_PipelineIntelligenceCalculatesCoverageAndAtRisk() {
+        // Set target on companyA
+        com.convexa.ai.convexa_ai_backend.dto.RevenueTargetRequest targetReq = com.convexa.ai.convexa_ai_backend.dto.RevenueTargetRequest.builder()
+                .target(new BigDecimal("100000.00"))
+                .period("QUARTERLY")
+                .build();
+        dealService.updateRevenueTarget(targetReq, principalA);
+
+        // Create open deal with a high-risk flag on call
+        callA1.setRiskFlags("[{\"severity\":\"High\",\"message\":\"Competitor pricing objection\"}]");
+        callA1.setObjections("[{\"objection\":\"Price too high\",\"resolved\":false}]");
+        callRecordRepository.save(callA1);
+
+        DealRequest openReq = DealRequest.builder()
+                .dealValue(new BigDecimal("80000.00"))
+                .dealStatus(DealStatus.OPEN)
+                .dealStage(DealStage.NEGOTIATION)
+                .build();
+        dealService.saveOrUpdateDealForCall(callA1.getId(), openReq, principalA);
+
+        com.convexa.ai.convexa_ai_backend.dto.PipelineIntelligenceResponse intel =
+                dealService.getPipelineIntelligence(principalA, "this_quarter");
+
+        assertEquals(new BigDecimal("80000.00"), intel.getTotalOpenValue());
+        assertEquals(0.80, intel.getPipelineCoverageRatio()); // 80,000 / 100,000 = 0.8x
+        assertEquals(1, intel.getAtRiskDealCount());
+        assertEquals(new BigDecimal("80000.00"), intel.getAtRiskPipelineValue());
+        assertFalse(intel.getAtRiskDeals().isEmpty());
+        assertEquals("CRITICAL", intel.getAtRiskDeals().get(0).getRiskLevel());
+    }
 }
+

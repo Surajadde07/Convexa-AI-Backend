@@ -32,4 +32,38 @@ public interface DealRepository extends JpaRepository<Deal, Long> {
 
     @Query("SELECT COUNT(DISTINCT d) FROM Deal d WHERE d.company.id = :companyId AND d.dealStatus = :status AND d.id IN (SELECT DISTINCT c.deal.id FROM CallRecord c WHERE c.deal IS NOT NULL AND c.company.id = :companyId)")
     long countCoveredDealsByCompanyIdAndStatus(@Param("companyId") Long companyId, @Param("status") DealStatus status);
+
+    /**
+     * Returns per-stage aggregates for OPEN deals in a company.
+     * Result: List of Object[] with [dealStage (DealStage enum), dealCount (Long), totalValue (BigDecimal)]
+     * Used by PipelineIntelligenceResponse.stageBreakdown.
+     */
+    @Query("SELECT d.dealStage, COUNT(d), COALESCE(SUM(d.dealValue), 0) FROM Deal d WHERE d.company.id = :companyId AND d.dealStatus = com.convexa.ai.convexa_ai_backend.entity.DealStatus.OPEN AND d.dealStage != com.convexa.ai.convexa_ai_backend.entity.DealStage.CLOSED GROUP BY d.dealStage")
+    List<Object[]> countAndSumByStageForOpenDeals(@Param("companyId") Long companyId);
+
+    /**
+     * Total value of all OPEN deals (not just call-covered) for pipeline overview.
+     */
+    @Query("SELECT COALESCE(SUM(d.dealValue), 0) FROM Deal d WHERE d.company.id = :companyId AND d.dealStatus = com.convexa.ai.convexa_ai_backend.entity.DealStatus.OPEN AND d.dealStage != com.convexa.ai.convexa_ai_backend.entity.DealStage.CLOSED")
+    BigDecimal sumOpenDealValueByCompanyId(@Param("companyId") Long companyId);
+
+    /**
+     * Count of all OPEN deals (not just call-covered).
+     */
+    @Query("SELECT COUNT(d) FROM Deal d WHERE d.company.id = :companyId AND d.dealStatus = com.convexa.ai.convexa_ai_backend.entity.DealStatus.OPEN AND d.dealStage != com.convexa.ai.convexa_ai_backend.entity.DealStage.CLOSED")
+    long countOpenDealsByCompanyId(@Param("companyId") Long companyId);
+
+
+    /**
+     * Count of all WON deals.
+     */
+    @Query("SELECT COUNT(d) FROM Deal d WHERE d.company.id = :companyId AND d.dealStatus = com.convexa.ai.convexa_ai_backend.entity.DealStatus.WON")
+    long countWonDealsByCompanyId(@Param("companyId") Long companyId);
+
+    /**
+     * Count of all LOST deals.
+     */
+    @Query("SELECT COUNT(d) FROM Deal d WHERE d.company.id = :companyId AND d.dealStatus = com.convexa.ai.convexa_ai_backend.entity.DealStatus.LOST")
+    long countLostDealsByCompanyId(@Param("companyId") Long companyId);
 }
+

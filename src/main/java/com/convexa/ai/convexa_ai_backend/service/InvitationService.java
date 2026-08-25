@@ -17,8 +17,10 @@ import java.util.UUID;
 import java.util.stream.Collectors;
 
 import com.convexa.ai.convexa_ai_backend.exception.DuplicatePendingInvitationException;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.transaction.annotation.Transactional;
 
+@Slf4j
 @Service
 public class InvitationService {
 
@@ -39,6 +41,9 @@ public class InvitationService {
 
     @Autowired
     private SubscriptionService subscriptionService;
+
+    @Autowired
+    private NotificationService notificationService;
 
     public InvitationResponse createInvitation(User manager, InvitationRequest req) {
 
@@ -232,6 +237,13 @@ public class InvitationService {
 
         // Synchronize active subscription seat counts
         subscriptionService.incrementSeatCount(invite.getCompany().getId());
+
+        // Notify inviter/owner
+        try {
+            notificationService.createMemberJoinedNotification(invite.getCompany(), invite.getInvitedBy(), user);
+        } catch (Exception notifEx) {
+            log.warn("Failed to create member joined notification: {}", notifEx.getMessage());
+        }
     }
 
     @Transactional

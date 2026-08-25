@@ -30,6 +30,12 @@ public class Deal {
     @JsonIgnore
     private User createdBy;
 
+    @Column(name = "deal_name")
+    private String dealName;
+
+    @Column(name = "account_name")
+    private String accountName;
+
     @Column(name = "deal_value", precision = 15, scale = 2)
     private BigDecimal dealValue;
 
@@ -43,6 +49,7 @@ public class Deal {
 
     @Column(name = "created_at", updatable = false)
     private LocalDateTime createdAt;
+
 
     @Column(name = "updated_at")
     private LocalDateTime updatedAt;

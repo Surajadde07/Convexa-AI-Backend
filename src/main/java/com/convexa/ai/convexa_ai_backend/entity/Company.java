@@ -47,6 +47,15 @@ public class Company {
     private String brandPrimaryColor;
     private String brandSecondaryColor;
 
+    @Column(name = "quarterly_revenue_target", precision = 15, scale = 2)
+    private java.math.BigDecimal quarterlyRevenueTarget;
+
+    @Column(name = "monthly_revenue_target", precision = 15, scale = 2)
+    private java.math.BigDecimal monthlyRevenueTarget;
+
+    @Column(name = "revenue_target_period")
+    private String revenueTargetPeriod;
+
     @OneToOne(mappedBy = "company", cascade = CascadeType.ALL, fetch = FetchType.LAZY)
     private Subscription subscription;
 
@@ -55,6 +64,7 @@ public class Company {
 
     private LocalDateTime createdAt;
     private LocalDateTime updatedAt;
+
 
     @PrePersist
     public void onCreate() {

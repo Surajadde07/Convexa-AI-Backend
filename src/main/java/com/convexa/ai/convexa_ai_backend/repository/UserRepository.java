@@ -16,5 +16,7 @@ public interface UserRepository
 
     java.util.List<User> findByCompanyId(Long companyId);
 
+    java.util.List<User> findByCompanyIdAndRole(Long companyId, com.convexa.ai.convexa_ai_backend.entity.Role role);
+
     long countByCompanyId(Long companyId);
 }

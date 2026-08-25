@@ -13,4 +13,8 @@ public class CompanyProfileUpdateRequest {
     private String industry;
     private String companySize;
     private String website;
+    private java.math.BigDecimal quarterlyRevenueTarget;
+    private java.math.BigDecimal monthlyRevenueTarget;
+    private String revenueTargetPeriod;
+
 }

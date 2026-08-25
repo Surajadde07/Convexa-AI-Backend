@@ -17,6 +17,10 @@ import java.math.BigDecimal;
 @AllArgsConstructor
 public class DealRequest {
 
+    private String dealName;
+
+    private String accountName;
+
     @NotNull(message = "Deal value is required")
     @DecimalMin(value = "0.0", inclusive = true, message = "Deal value must be greater than or equal to 0")
     private BigDecimal dealValue;
@@ -26,4 +30,5 @@ public class DealRequest {
 
     @NotNull(message = "Deal stage is required")
     private DealStage dealStage;
+
 }

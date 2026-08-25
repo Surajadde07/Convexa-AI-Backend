@@ -76,6 +76,77 @@ public class CompanyController {
     @Autowired
     private com.convexa.ai.convexa_ai_backend.service.MediaLibraryService mediaLibraryService;
 
+    @Autowired
+    private com.convexa.ai.convexa_ai_backend.service.ExecutiveBriefingService executiveBriefingService;
+
+    @Autowired
+    private com.convexa.ai.convexa_ai_backend.service.DealService dealService;
+
+    @Autowired
+    private CallRecordRepository callRecordRepository;
+
+    @GetMapping("/executive-report")
+    public ResponseEntity<?> getExecutiveReport(
+            @RequestParam(value = "range", required = false, defaultValue = "30d") String range,
+            @AuthenticationPrincipal WorkspacePrincipal principal
+    ) {
+        if (principal == null || principal.getCompanyId() == null) {
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
+        }
+
+        Long companyId = principal.getCompanyId();
+        Company company = companyRepository.findById(companyId)
+                .orElseThrow(() -> new RuntimeException("Company not found"));
+
+        CompanyStatsResponse stats = companyService.getCompanyStats(companyId, range);
+        ExecutiveBriefingResponse briefing = executiveBriefingService.getExecutiveBriefing(companyId, range);
+        PipelineSummaryResponse pipeline = dealService.getPipelineSummary(principal);
+        MediaLibraryResponse mediaLibrary = mediaLibraryService.getMediaLibrary(principal);
+        List<DailyCompanyMetricsDTO> dailyMetrics = dailyCompanyMetricsService.getDailyMetrics(companyId, range);
+
+        // Fetch company calls and filter by range
+        List<CallRecord> allCalls = callRecordRepository.findByCompanyIdOrderByCreatedAtDesc(companyId);
+        List<CallRecord> rangedCalls;
+        if ("all".equalsIgnoreCase(range)) {
+            rangedCalls = allCalls;
+        } else {
+            int days = "7d".equalsIgnoreCase(range) ? 7 : 30;
+            java.time.LocalDateTime cutoff = java.time.LocalDateTime.now().minusDays(days);
+            rangedCalls = allCalls.stream()
+                    .filter(c -> c.getCreatedAt() != null && c.getCreatedAt().isAfter(cutoff))
+                    .collect(Collectors.toList());
+        }
+
+        List<ExecutiveReportResponse.CallRecordReportItem> reportCalls = rangedCalls.stream()
+                .limit(25)
+                .map(c -> ExecutiveReportResponse.CallRecordReportItem.builder()
+                        .id(c.getId())
+                        .fileName(c.getFileName())
+                        .uploaderName(c.getUser() != null ? (c.getUser().getName() != null && !c.getUser().getName().isBlank() ? c.getUser().getName() : c.getUser().getEmail()) : "System User")
+                        .createdAt(c.getCreatedAt() != null ? c.getCreatedAt().toString() : null)
+                        .overallScore(c.getOverallScore())
+                        .outcomeStatus(c.getOutcomeStatus())
+                        .sentiment(c.getSentiment())
+                        .callType(c.getCallType())
+                        .build())
+                .collect(Collectors.toList());
+
+        ExecutiveReportResponse report = ExecutiveReportResponse.builder()
+                .companyName(company.getCompanyName())
+                .companyLogo(company.getCompanyLogo())
+                .range(range)
+                .generatedAt(java.time.LocalDateTime.now().toString())
+                .stats(stats)
+                .briefing(briefing)
+                .pipeline(pipeline)
+                .mediaLibrary(mediaLibrary)
+                .dailyMetrics(dailyMetrics)
+                .calls(reportCalls)
+                .build();
+
+        return ResponseEntity.ok(report);
+    }
+
     @GetMapping("/stats")
     public ResponseEntity<CompanyStatsResponse> getCompanyStats(
             @RequestParam(value = "range", required = false, defaultValue = "30d") String range,
@@ -231,10 +302,14 @@ public class CompanyController {
         if (req.getIndustry() != null) company.setIndustry(req.getIndustry());
         if (req.getCompanySize() != null) company.setCompanySize(req.getCompanySize());
         if (req.getWebsite() != null) company.setWebsite(req.getWebsite());
+        if (req.getQuarterlyRevenueTarget() != null) company.setQuarterlyRevenueTarget(req.getQuarterlyRevenueTarget());
+        if (req.getMonthlyRevenueTarget() != null) company.setMonthlyRevenueTarget(req.getMonthlyRevenueTarget());
+        if (req.getRevenueTargetPeriod() != null) company.setRevenueTargetPeriod(req.getRevenueTargetPeriod());
 
         companyRepository.save(company);
         return ResponseEntity.ok(company);
     }
+
 
     @PostMapping("/logo")
     public ResponseEntity<?> uploadLogo(
