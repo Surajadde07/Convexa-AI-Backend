@@ -51,8 +51,8 @@ public class DealService {
         if (principal.getRole() != Role.OWNER && principal.getRole() != Role.ADMIN) {
             throw new RuntimeException("Only workspace owners and administrators can configure revenue targets");
         }
-        if (request.getTarget() == null || request.getTarget().compareTo(BigDecimal.ZERO) < 0) {
-            throw new IllegalArgumentException("Revenue target must be non-negative");
+        if (request.getTarget() == null || request.getTarget().compareTo(BigDecimal.ZERO) <= 0) {
+            throw new IllegalArgumentException("Revenue target must be greater than zero");
         }
 
         Company company = companyRepository.findById(principal.getCompanyId())
@@ -203,35 +203,49 @@ public class DealService {
                 .orElseThrow(() -> new RuntimeException("Company not found"));
 
         // ── 1. Target & Period configuration ──────────────────────────────────
-        String targetPeriod = (company.getRevenueTargetPeriod() != null && !company.getRevenueTargetPeriod().isBlank())
+        String configuredPeriod = (company.getRevenueTargetPeriod() != null && !company.getRevenueTargetPeriod().isBlank())
                 ? company.getRevenueTargetPeriod().toUpperCase() : "QUARTERLY";
 
-        BigDecimal revenueTarget = "MONTHLY".equals(targetPeriod)
+        BigDecimal configuredTarget = "MONTHLY".equals(configuredPeriod)
                 ? company.getMonthlyRevenueTarget()
                 : company.getQuarterlyRevenueTarget();
 
-        // If primary target is null, check if the other period target was set
-        if (revenueTarget == null) {
-            if ("MONTHLY".equals(targetPeriod) && company.getQuarterlyRevenueTarget() != null) {
-                revenueTarget = company.getQuarterlyRevenueTarget();
-                targetPeriod = "QUARTERLY";
-            } else if ("QUARTERLY".equals(targetPeriod) && company.getMonthlyRevenueTarget() != null) {
-                revenueTarget = company.getMonthlyRevenueTarget();
-                targetPeriod = "MONTHLY";
+        // If primary target is null or <= 0, check if the other period target was set and positive
+        if (configuredTarget == null || configuredTarget.compareTo(BigDecimal.ZERO) <= 0) {
+            if ("MONTHLY".equals(configuredPeriod) && company.getQuarterlyRevenueTarget() != null && company.getQuarterlyRevenueTarget().compareTo(BigDecimal.ZERO) > 0) {
+                configuredTarget = company.getQuarterlyRevenueTarget();
+                configuredPeriod = "QUARTERLY";
+            } else if ("QUARTERLY".equals(configuredPeriod) && company.getMonthlyRevenueTarget() != null && company.getMonthlyRevenueTarget().compareTo(BigDecimal.ZERO) > 0) {
+                configuredTarget = company.getMonthlyRevenueTarget();
+                configuredPeriod = "MONTHLY";
             }
         }
 
-        // ── 2. Parse Date Range Cutoffs ────────────────────────────────────────
+        boolean hasValidTarget = (configuredTarget != null && configuredTarget.compareTo(BigDecimal.ZERO) > 0);
+        BigDecimal revenueTarget = hasValidTarget ? configuredTarget : null;
+        String revenueTargetPeriod = configuredPeriod;
+
+        // ── 2. Parse Date Range Cutoffs & Target Alignment ─────────────────────
         LocalDateTime startCutoff = null;
         LocalDateTime endCutoff = LocalDateTime.now();
         String periodLabel = "This Quarter";
         LocalDate today = LocalDate.now();
 
         String cleanRange = (range != null && !range.isBlank()) ? range.toLowerCase().trim() : "this_quarter";
+        String targetAlignmentStatus;
+
         switch (cleanRange) {
             case "this_month", "month" -> {
                 startCutoff = LocalDate.of(today.getYear(), today.getMonthValue(), 1).atStartOfDay();
                 periodLabel = "This Month (" + today.getMonth().name().substring(0, 1) + today.getMonth().name().substring(1).toLowerCase() + ")";
+                cleanRange = "this_month";
+                if (!hasValidTarget) {
+                    targetAlignmentStatus = "NO_TARGET";
+                } else if ("MONTHLY".equals(configuredPeriod)) {
+                    targetAlignmentStatus = "ALIGNED";
+                } else {
+                    targetAlignmentStatus = "PERIOD_MISMATCH";
+                }
             }
             case "last_quarter" -> {
                 int currentQuarter = (today.getMonthValue() - 1) / 3 + 1;
@@ -242,24 +256,36 @@ public class DealService {
                 startCutoff = LocalDate.of(lastQuarterYear, startMonth, 1).atStartOfDay();
                 endCutoff = LocalDate.of(lastQuarterYear, endMonth, LocalDate.of(lastQuarterYear, endMonth, 1).lengthOfMonth()).atTime(23, 59, 59);
                 periodLabel = "Q" + lastQuarter + " " + lastQuarterYear;
+                targetAlignmentStatus = hasValidTarget ? "HISTORICAL_UNAVAILABLE" : "NO_TARGET";
             }
             case "30d" -> {
                 startCutoff = LocalDateTime.now().minusDays(30);
                 periodLabel = "Last 30 Days";
+                targetAlignmentStatus = hasValidTarget ? "HISTORICAL_UNAVAILABLE" : "NO_TARGET";
             }
             case "7d" -> {
                 startCutoff = LocalDateTime.now().minusDays(7);
                 periodLabel = "Last 7 Days";
+                targetAlignmentStatus = hasValidTarget ? "HISTORICAL_UNAVAILABLE" : "NO_TARGET";
             }
             case "all" -> {
                 startCutoff = null;
                 periodLabel = "All Time";
+                targetAlignmentStatus = hasValidTarget ? "NOT_APPLICABLE_ALL_TIME" : "NO_TARGET";
             }
             default -> { // "this_quarter", "quarter"
                 int currentQuarter = (today.getMonthValue() - 1) / 3 + 1;
                 int startMonth = (currentQuarter - 1) * 3 + 1;
                 startCutoff = LocalDate.of(today.getYear(), startMonth, 1).atStartOfDay();
                 periodLabel = "Q" + currentQuarter + " " + today.getYear();
+                cleanRange = "this_quarter";
+                if (!hasValidTarget) {
+                    targetAlignmentStatus = "NO_TARGET";
+                } else if ("QUARTERLY".equals(configuredPeriod)) {
+                    targetAlignmentStatus = "ALIGNED";
+                } else {
+                    targetAlignmentStatus = "PERIOD_MISMATCH";
+                }
             }
         }
 
@@ -387,6 +413,7 @@ public class DealService {
             String latestSentiment = null;
             String latestBuyingIntent = null;
             boolean hasHighRiskFlag = false;
+            boolean hasCriticalRiskFlag = false;
             boolean hasUnresolvedPricing = false;
             boolean hasCompetitorMention = false;
 
@@ -408,7 +435,11 @@ public class DealService {
                             List<Map<String, Object>> flags = MAPPER.readValue(c.getRiskFlags(),
                                     MAPPER.getTypeFactory().constructCollectionType(List.class, Map.class));
                             for (Map<String, Object> f : flags) {
-                                if ("High".equalsIgnoreCase(String.valueOf(f.getOrDefault("severity", "")))) {
+                                String sev = String.valueOf(f.getOrDefault("severity", ""));
+                                if ("Critical".equalsIgnoreCase(sev)) {
+                                    hasCriticalRiskFlag = true;
+                                    hasHighRiskFlag = true;
+                                } else if ("High".equalsIgnoreCase(sev)) {
                                     hasHighRiskFlag = true;
                                 }
                             }
@@ -468,36 +499,91 @@ public class DealService {
                     .setScale(2, RoundingMode.HALF_UP);
             healthWeightedPipeline = healthWeightedPipeline.add(weightedDealValue);
 
-            // ── At-Risk Qualification ─────────────────────────────────────────
+            // ── At-Risk Qualification (Compounding Stage-Aware Risk Model) ────
+            int inactivityThreshold = switch (deal.getDealStage()) {
+                case DISCOVERY -> 30;
+                case DEMO -> 21;
+                case PROPOSAL -> 14;
+                case NEGOTIATION -> 10;
+                default -> 21;
+            };
+            boolean hasInactivityRisk = daysInactive > inactivityThreshold;
+            boolean isLateStage = (deal.getDealStage() == DealStage.PROPOSAL || deal.getDealStage() == DealStage.NEGOTIATION);
+            boolean hasCompetitiveRisk = hasCompetitorMention && isLateStage;
+            boolean hasNegativeSentiment = "Negative".equalsIgnoreCase(latestSentiment);
+            boolean hasLowIntent = "Low".equalsIgnoreCase(latestBuyingIntent) || "None".equalsIgnoreCase(latestBuyingIntent);
+
             List<String> riskReasons = new ArrayList<>();
+            // Order reasons by severity significance so riskReasons.get(0) is the primary trigger
             if (hasHighRiskFlag) {
                 riskReasons.add("High-severity risk flag detected on deal call");
             }
-            if (hasUnresolvedPricing && (deal.getDealStage() == DealStage.PROPOSAL || deal.getDealStage() == DealStage.NEGOTIATION)) {
-                riskReasons.add("Unresolved pricing/budget friction in late stage");
+            if (hasUnresolvedPricing) {
+                if (isLateStage) {
+                    riskReasons.add("Unresolved pricing/budget friction in late stage");
+                } else {
+                    riskReasons.add("Unresolved pricing or budget objection");
+                }
             }
-            if (daysInactive > 21) {
-                riskReasons.add("Critical inactivity: no call activity for " + daysInactive + " days");
-            } else if (daysInactive > 14) {
-                riskReasons.add("Stalled: no call activity for " + daysInactive + " days");
+            if (hasCompetitiveRisk) {
+                riskReasons.add("Competitor pressure in late stage");
             }
-            if ("Negative".equalsIgnoreCase(latestSentiment)) {
+            if (hasNegativeSentiment) {
                 riskReasons.add("Negative buyer sentiment on latest conversation");
             }
-            if ("Low".equalsIgnoreCase(latestBuyingIntent) || "None".equalsIgnoreCase(latestBuyingIntent)) {
+            if (hasLowIntent) {
                 riskReasons.add("Low or no buyer purchasing intent detected");
             }
+            if (hasInactivityRisk) {
+                riskReasons.add("No meaningful engagement for " + daysInactive + " days");
+            }
 
-            boolean isAtRisk = !riskReasons.isEmpty();
-            if (isAtRisk) {
-                atRiskDealCount++;
-                atRiskPipelineValue = atRiskPipelineValue.add(val);
+            // Compounding Critical Evaluation:
+            // A) High-severity risk flag exists AND at least one additional meaningful risk signal exists
+            boolean hasAdditionalRiskSignal = hasUnresolvedPricing || hasInactivityRisk || hasNegativeSentiment || hasLowIntent || hasCompetitiveRisk;
+            boolean ruleA = hasHighRiskFlag && hasAdditionalRiskSignal;
 
-                String riskLevel = "MEDIUM";
-                if (hasHighRiskFlag || daysInactive > 21 || (hasUnresolvedPricing && deal.getDealStage() == DealStage.NEGOTIATION)) {
+            // B) Late-stage deal (Proposal or Negotiation) has unresolved pricing/budget friction AND meaningful inactivity
+            boolean ruleB = isLateStage && hasUnresolvedPricing && hasInactivityRisk;
+
+            // C) Deal has multiple strong negative signals together: negative sentiment + low/none buying intent + meaningful inactivity
+            boolean ruleC = hasNegativeSentiment && hasLowIntent && hasInactivityRisk;
+
+            // D) Explicit critical AI risk signal in data model
+            boolean ruleD = hasCriticalRiskFlag;
+
+            boolean isCritical = ruleA || ruleB || ruleC || ruleD;
+
+            // ── Material Commercial Risk vs Stalled Inactivity ─────────────────
+            // Material commercial/conversational risk:
+            // A deal is materially at risk if it meets CRITICAL compounding criteria,
+            // or exhibits direct conversational friction: high-severity risk flag,
+            // unresolved pricing friction, late-stage competitor push, negative sentiment,
+            // or low/none buying intent.
+            boolean hasMaterialRisk = isCritical
+                    || hasHighRiskFlag
+                    || hasUnresolvedPricing
+                    || hasCompetitiveRisk
+                    || hasNegativeSentiment
+                    || hasLowIntent;
+
+            boolean isStalledOnly = hasInactivityRisk && !hasMaterialRisk;
+            boolean isAtRiskOrStalled = hasMaterialRisk || isStalledOnly;
+
+            if (isAtRiskOrStalled) {
+                String riskLevel;
+                if (isCritical) {
                     riskLevel = "CRITICAL";
-                } else if (daysInactive > 14 || hasUnresolvedPricing || "Negative".equalsIgnoreCase(latestSentiment)) {
+                } else if (hasMaterialRisk) {
                     riskLevel = "HIGH";
+                } else {
+                    riskLevel = "STALLED";
+                }
+
+                // Only materially at-risk deals contribute financial capital exposure
+                if (hasMaterialRisk) {
+                    atRiskDealCount++;
+                    atRiskPipelineValue = atRiskPipelineValue.add(val);
                 }
 
                 String dealDisplayName = deal.getDealName() != null && !deal.getDealName().isBlank()
@@ -530,18 +616,18 @@ public class DealService {
                 pricingPressureDeals++;
                 pricingPressureValue = pricingPressureValue.add(val);
             }
-            if (hasCompetitorMention && (deal.getDealStage() == DealStage.PROPOSAL || deal.getDealStage() == DealStage.NEGOTIATION)) {
+            if (hasCompetitorMention && isLateStage) {
                 competitiveExposureDeals++;
                 competitiveExposureValue = competitiveExposureValue.add(val);
             }
-            if (isAtRisk || daysInactive > 14) {
+            if (hasMaterialRisk || isStalledOnly) {
                 decliningEngagementDeals++;
             } else {
                 healthyEngagementDeals++;
             }
         }
 
-        // Sort at-risk deals: CRITICAL > HIGH > MEDIUM, then by deal value desc
+        // Sort at-risk deals: CRITICAL > HIGH > STALLED/MEDIUM, then by deal value desc
         atRiskDealsList.sort((a, b) -> {
             int severityA = "CRITICAL".equals(a.getRiskLevel()) ? 3 : "HIGH".equals(a.getRiskLevel()) ? 2 : 1;
             int severityB = "CRITICAL".equals(b.getRiskLevel()) ? 3 : "HIGH".equals(b.getRiskLevel()) ? 2 : 1;
@@ -578,19 +664,38 @@ public class DealService {
                     .build());
         }
 
-        // ── 9. Coverage Ratio & Gap to Target ──────────────────────────────────
+        // ── 9. Coverage Ratio & Gap to Target (Honest Period Alignment) ─────────
         Double pipelineCoverageRatio = null;
         BigDecimal gapToTarget = null;
-        if (revenueTarget != null && revenueTarget.compareTo(BigDecimal.ZERO) > 0) {
-            pipelineCoverageRatio = totalOpenValue.divide(revenueTarget, 2, RoundingMode.HALF_UP).doubleValue();
-            gapToTarget = revenueTarget.subtract(periodClosedWon.add(healthWeightedPipeline));
+        BigDecimal actualRevenueGap = null;
+
+        if ("ALIGNED".equals(targetAlignmentStatus) && revenueTarget != null && revenueTarget.compareTo(BigDecimal.ZERO) > 0) {
+            // Actual Revenue Gap = Target - Actual Period Closed Won
+            // Open pipeline and health-weighted pipeline are NEVER subtracted from the actual revenue gap
+            if (periodClosedWon.compareTo(revenueTarget) >= 0) {
+                gapToTarget = BigDecimal.ZERO.setScale(2, RoundingMode.HALF_UP);
+                actualRevenueGap = BigDecimal.ZERO.setScale(2, RoundingMode.HALF_UP);
+                // When remaining gap is zero, target is achieved by Closed Won alone; coverage ratio is null (avoids division by zero)
+                pipelineCoverageRatio = null;
+            } else {
+                BigDecimal remainingGap = revenueTarget.subtract(periodClosedWon).setScale(2, RoundingMode.HALF_UP);
+                gapToTarget = remainingGap;
+                actualRevenueGap = remainingGap;
+
+                // Pipeline Coverage = Current Open Pipeline / Remaining Revenue Gap
+                if (remainingGap.compareTo(BigDecimal.ZERO) > 0) {
+                    pipelineCoverageRatio = totalOpenValue.divide(remainingGap, 2, RoundingMode.HALF_UP).doubleValue();
+                }
+            }
         }
 
         return PipelineIntelligenceResponse.builder()
                 .revenueTarget(revenueTarget)
-                .revenueTargetPeriod(targetPeriod)
+                .revenueTargetPeriod(revenueTargetPeriod)
+                .targetAlignmentStatus(targetAlignmentStatus)
                 .pipelineCoverageRatio(pipelineCoverageRatio)
                 .gapToTarget(gapToTarget)
+                .actualRevenueGap(actualRevenueGap)
                 .totalOpenValue(totalOpenValue)
                 .totalOpenDeals(openDeals.size())
                 .healthWeightedPipeline(healthWeightedPipeline)

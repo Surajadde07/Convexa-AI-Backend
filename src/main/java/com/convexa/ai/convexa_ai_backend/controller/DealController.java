@@ -120,12 +120,12 @@ public class DealController {
                     "revenueTargetPeriod", company.getRevenueTargetPeriod() != null ? company.getRevenueTargetPeriod() : "QUARTERLY"
             ));
         } catch (IllegalArgumentException e) {
-            return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
+            return ResponseEntity.badRequest().body(Map.of("error", e.getMessage(), "message", e.getMessage()));
         } catch (RuntimeException e) {
             if (e.getMessage() != null && e.getMessage().contains("Only workspace owners")) {
-                return ResponseEntity.status(403).body(Map.of("error", e.getMessage()));
+                return ResponseEntity.status(403).body(Map.of("error", e.getMessage(), "message", e.getMessage()));
             }
-            return ResponseEntity.status(500).body(Map.of("error", e.getMessage()));
+            return ResponseEntity.status(500).body(Map.of("error", e.getMessage(), "message", e.getMessage()));
         }
     }
 }

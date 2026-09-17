@@ -20,7 +20,7 @@ import java.math.BigDecimal;
 public class RevenueTargetRequest {
 
     @NotNull(message = "Revenue target amount is required")
-    @DecimalMin(value = "0.0", inclusive = true, message = "Revenue target must be greater than or equal to 0")
+    @DecimalMin(value = "0.0", inclusive = false, message = "Revenue target must be greater than 0")
     private BigDecimal target;
 
     // Optional: "QUARTERLY" or "MONTHLY" (defaults to "QUARTERLY" if omitted)

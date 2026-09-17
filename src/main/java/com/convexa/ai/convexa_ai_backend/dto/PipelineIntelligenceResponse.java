@@ -31,8 +31,10 @@ public class PipelineIntelligenceResponse {
     // ── Current State: Target & Coverage ───────────────────────────────────────
     private BigDecimal revenueTarget;
     private String revenueTargetPeriod; // "QUARTERLY" or "MONTHLY"
-    private Double pipelineCoverageRatio; // Open Pipeline / Target (null if no target)
-    private BigDecimal gapToTarget; // Target - (Closed Won in period + Health Weighted Pipeline)
+    private String targetAlignmentStatus; // "ALIGNED", "PERIOD_MISMATCH", "HISTORICAL_UNAVAILABLE", "NOT_APPLICABLE_ALL_TIME", "NO_TARGET"
+    private Double pipelineCoverageRatio; // Open Pipeline / Remaining Revenue Gap (null if no target, mismatched, or gap <= 0)
+    private BigDecimal gapToTarget; // Target - Period Closed Won (0 if target achieved, null if no target or mismatched)
+    private BigDecimal actualRevenueGap; // Explicit alias for gapToTarget (Target - Actual Period Closed Won)
 
     // ── Current State: Open Pipeline & Health-Weighted ─────────────────────────
     private BigDecimal totalOpenValue;
